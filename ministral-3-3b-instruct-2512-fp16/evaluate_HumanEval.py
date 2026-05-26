@@ -26,13 +26,13 @@ MODEL_NAME_OR_PATH = "mistralai/Ministral-3-3B-Instruct-2512-BF16"
 CKPT_DIR = Path("adaptive_decoder_ckpt")
 CONFIG_FILE = CKPT_DIR / "config.json"
 
-DEVICE = "mps"
+DEVICE = "cuda"
 DTYPE_NAME = "float16"
 
 # Hugging Face mirror of OpenAI HumanEval
 DATASET_NAME = "openai/openai_humaneval"
 DATASET_SPLIT = "test"
-NUM_EXAMPLES = 4  # None = full HumanEval, usually 164 tasks
+NUM_EXAMPLES = None  # None = full HumanEval, usually 164 tasks
 
 OUTPUT_DIR = Path("humaneval_full_n100_classic_hf")
 RESULTS_FILE = OUTPUT_DIR / "results.jsonl"
@@ -40,8 +40,8 @@ SUMMARY_TXT_FILE = OUTPUT_DIR / "summary.txt"
 SUMMARY_JSON_FILE = OUTPUT_DIR / "summary.json"
 
 # HumanEval sampling settings
-N_SAMPLES_PER_TASK = 10
-PASS_AT_K_VALUES = [1, 10, 100]
+N_SAMPLES_PER_TASK = 100
+PASS_AT_K_VALUES = [1, 2, 5, 10, 20, 50, 100]
 
 # Same idea as your GSM8K classic baseline
 TEMPERATURES = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
@@ -428,6 +428,118 @@ def aggregate_pass_at_k(records: list[dict[str, Any]], temperatures: list[float]
 
 
 # ============================================================
+# Attempt efficiency / tries-to-first-pass
+# ============================================================
+
+def aggregate_attempt_efficiency(
+    records: list[dict[str, Any]],
+    temperatures: list[float],
+) -> dict[float, dict[str, Any]]:
+    """
+    Computes sample-efficiency metrics for HumanEval.
+
+    For each task and temperature:
+      - first_pass_attempt = first sample index that passed, using 1-based indexing
+      - if never solved, assign N_SAMPLES_PER_TASK + 1
+
+    Main metrics:
+      - solved
+      - unsolved
+      - mean_attempts_to_first_pass
+      - median_attempts_to_first_pass
+
+    The non-solved-only metrics penalize unsolved tasks as budget + 1.
+    This makes them better for comparing decoding methods fairly.
+    """
+    by_temp_task: dict[float, dict[str, list[dict[str, Any]]]] = {
+        float(t): {} for t in temperatures
+    }
+
+    for rec in records:
+        if rec.get("generation_failed"):
+            continue
+
+        t = float(rec["temperature"])
+        task_id = str(rec["task_id"])
+
+        if t not in by_temp_task:
+            by_temp_task[t] = {}
+
+        by_temp_task[t].setdefault(task_id, []).append(rec)
+
+    def median(xs: list[int]) -> float:
+        if not xs:
+            return float("nan")
+
+        xs = sorted(xs)
+        n = len(xs)
+        mid = n // 2
+
+        if n % 2 == 1:
+            return float(xs[mid])
+
+        return float((xs[mid - 1] + xs[mid]) / 2)
+
+    out: dict[float, dict[str, Any]] = {}
+
+    for t, task_map in by_temp_task.items():
+        attempts_to_first_pass = []
+        solved_only_attempts = []
+        solved = 0
+        unsolved = 0
+
+        for task_id, rows in task_map.items():
+            rows = sorted(rows, key=lambda r: int(r["sample_index"]))
+
+            first_pass_attempt = None
+
+            for r in rows:
+                if r.get("passed") is True:
+                    first_pass_attempt = int(r["sample_index"]) + 1
+                    break
+
+            if first_pass_attempt is None:
+                unsolved += 1
+                attempts_to_first_pass.append(N_SAMPLES_PER_TASK + 1)
+            else:
+                solved += 1
+                attempts_to_first_pass.append(first_pass_attempt)
+                solved_only_attempts.append(first_pass_attempt)
+
+        num_tasks = len(task_map)
+
+        mean_attempts_all = (
+            sum(attempts_to_first_pass) / len(attempts_to_first_pass)
+            if attempts_to_first_pass
+            else float("nan")
+        )
+
+        mean_attempts_solved_only = (
+            sum(solved_only_attempts) / len(solved_only_attempts)
+            if solved_only_attempts
+            else float("nan")
+        )
+
+        out[t] = {
+            "num_tasks": num_tasks,
+            "attempt_budget": N_SAMPLES_PER_TASK,
+            "solved": solved,
+            "unsolved": unsolved,
+            "solve_rate": solved / num_tasks if num_tasks else float("nan"),
+
+            # Penalizes unsolved tasks as N_SAMPLES_PER_TASK + 1.
+            "mean_attempts_to_first_pass": mean_attempts_all,
+            "median_attempts_to_first_pass": median(attempts_to_first_pass),
+
+            # Diagnostic only: ignores unsolved tasks.
+            "mean_attempts_to_first_pass_solved_only": mean_attempts_solved_only,
+            "median_attempts_to_first_pass_solved_only": median(solved_only_attempts),
+        }
+
+    return out
+
+
+# ============================================================
 # IO / progress helpers
 # ============================================================
 
@@ -698,6 +810,7 @@ def main() -> None:
 
     all_records = read_jsonl(RESULTS_FILE)
     aggregate = aggregate_pass_at_k(all_records, TEMPERATURES)
+    efficiency = aggregate_attempt_efficiency(all_records, TEMPERATURES)
 
     summary_lines = []
     summary_lines.append("=" * 60)
@@ -726,6 +839,29 @@ def main() -> None:
         sample_acc = total_correct / total_samples if total_samples else 0.0
 
         summary_lines.append(f"  sample_acc = {sample_acc:.4f} ({total_correct}/{total_samples})")
+
+        eff = efficiency.get(t, {})
+        summary_lines.append(
+            f"  solved = {eff.get('solved', 0)}/{eff.get('num_tasks', 0)} "
+            f"({eff.get('solve_rate', float('nan')):.4f})"
+        )
+        summary_lines.append(f"  unsolved = {eff.get('unsolved', 0)}")
+        summary_lines.append(
+            f"  mean_attempts_to_first_pass = "
+            f"{eff.get('mean_attempts_to_first_pass', float('nan')):.2f}"
+        )
+        summary_lines.append(
+            f"  median_attempts_to_first_pass = "
+            f"{eff.get('median_attempts_to_first_pass', float('nan')):.2f}"
+        )
+        summary_lines.append(
+            f"  mean_attempts_to_first_pass_solved_only = "
+            f"{eff.get('mean_attempts_to_first_pass_solved_only', float('nan')):.2f}"
+        )
+        summary_lines.append(
+            f"  median_attempts_to_first_pass_solved_only = "
+            f"{eff.get('median_attempts_to_first_pass_solved_only', float('nan')):.2f}"
+        )
         summary_lines.append("")
 
     summary_lines.append(f"Total runtime: {fmt_time(total_elapsed)}")
@@ -761,12 +897,15 @@ def main() -> None:
         "execution_timeout_seconds": EXECUTION_TIMEOUT_SECONDS,
         "total_runtime_seconds": total_elapsed,
         "results": aggregate,
+        "attempt_efficiency": efficiency,
         "note": (
             "Classic fixed-temperature HumanEval baseline using the same Hugging Face "
             "model, tokenizer, chat template, model loading path, dtype/device config, "
             "and temperature-grid comparability logic as the GSM8K evaluator. "
             "The task-specific logic is changed from numeric answer parsing to Python "
-            "code generation plus functional correctness execution."
+            "code generation plus functional correctness execution. "
+            "The summary also reports attempt-efficiency metrics, including "
+            "mean/median attempts to first pass and unsolved count."
         ),
     }
 
