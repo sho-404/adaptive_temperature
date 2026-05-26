@@ -1,0 +1,29 @@
+{
+  "model": "mistralai/Ministral-3-3B-Instruct-2512-BF16",
+  "dataset": "openai/gsm8k/main",
+  "split": "test",
+  "num_examples": 1319,
+  "accuracy": 0.8612585291887794,
+  "stats": {
+    "correct": 1136,
+    "incorrect": 151,
+    "unparseable": 32,
+    "bad_gt": 0,
+    "generation_failed": 0
+  },
+  "temperature_grid": [
+    0.0,
+    0.2,
+    0.4,
+    0.6,
+    0.8,
+    1.0
+  ],
+  "max_prompt_tokens": 768,
+  "seed": 42,
+  "use_attention_entropy": true,
+  "attention_implementation_requested": "eager",
+  "generation_seed_policy": "torch.manual_seed(SEED + gsm8k_index) immediately before model.generate",
+  "runtime_seconds": 8100.798598375055,
+  "note": "Per-sequence adaptive temperature. One chosen temperature per GSM8K question. Generation path is matched to classic_comparable except for temperature selection."
+}

@@ -1,0 +1,19 @@
+{
+  "model_name_or_path": "mistralai/Ministral-3-3B-Instruct-2512-BF16",
+  "input_dim": 3078,
+  "hidden_size": 3072,
+  "mlp_hidden_dim": 2048,
+  "dropout": 0.1,
+  "max_prompt_tokens": 768,
+  "temperature_grid": [
+    0.0,
+    0.2,
+    0.4,
+    0.6,
+    0.8,
+    1.0
+  ],
+  "use_attention_entropy": true,
+  "dtype_name": "float16",
+  "note": "Per-sequence temperature scorer. One temperature is chosen before generation; this is not token-level adaptive decoding."
+}

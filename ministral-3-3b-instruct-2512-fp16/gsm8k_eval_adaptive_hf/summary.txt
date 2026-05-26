@@ -1,0 +1,9 @@
+============================================================
+mistralai/Ministral-3-3B-Instruct-2512-BF16
+Adaptive per-sequence temperature evaluation
+Accuracy: 0.8613 (1136/1319)
+Incorrect: 151
+Unparseable: 32
+Generation failed: 0
+Bad GT: 0
+Total runtime: 2h 15m 0s
