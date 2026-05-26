@@ -32,7 +32,7 @@ DTYPE_NAME = "float16"
 # Hugging Face mirror of OpenAI HumanEval
 DATASET_NAME = "openai/openai_humaneval"
 DATASET_SPLIT = "test"
-NUM_EXAMPLES = None  # None = full HumanEval, usually 164 tasks
+NUM_EXAMPLES = 4  # None = full HumanEval, usually 164 tasks
 
 OUTPUT_DIR = Path("humaneval_full_n100_classic_hf")
 RESULTS_FILE = OUTPUT_DIR / "results.jsonl"
@@ -40,7 +40,7 @@ SUMMARY_TXT_FILE = OUTPUT_DIR / "summary.txt"
 SUMMARY_JSON_FILE = OUTPUT_DIR / "summary.json"
 
 # HumanEval sampling settings
-N_SAMPLES_PER_TASK = 100
+N_SAMPLES_PER_TASK = 10
 PASS_AT_K_VALUES = [1, 10, 100]
 
 # Same idea as your GSM8K classic baseline
@@ -161,39 +161,25 @@ def get_device() -> torch.device:
     return torch.device("cpu")
 
 
-def load_ministral3(
-    device: torch.device,
-    dtype: torch.dtype,
-    use_attention_entropy: bool,
-):
-    tokenizer = MistralCommonBackend.from_pretrained(
-        MODEL_NAME_OR_PATH,
-    )
+from huggingface_hub import snapshot_download
 
-    kwargs = dict(
-        dtype=dtype,
-        trust_remote_code=True,
-        low_cpu_mem_usage=True,
-    )
+def load_ministral3(device, dtype, use_attention_entropy):
+    local_path = snapshot_download(MODEL_NAME_OR_PATH, local_files_only=True)
 
+    tokenizer = MistralCommonBackend.from_pretrained(local_path)
+
+    kwargs = dict(dtype=dtype, trust_remote_code=True, low_cpu_mem_usage=True)
     if use_attention_entropy:
         kwargs["attn_implementation"] = "eager"
 
     try:
-        model = Mistral3ForConditionalGeneration.from_pretrained(
-            MODEL_NAME_OR_PATH,
-            **kwargs,
-        )
+        model = Mistral3ForConditionalGeneration.from_pretrained(local_path, **kwargs)
     except TypeError:
         kwargs.pop("attn_implementation", None)
-        model = Mistral3ForConditionalGeneration.from_pretrained(
-            MODEL_NAME_OR_PATH,
-            **kwargs,
-        )
+        model = Mistral3ForConditionalGeneration.from_pretrained(local_path, **kwargs)
 
     model.to(device)
     model.eval()
-
     return tokenizer, model
 
 
