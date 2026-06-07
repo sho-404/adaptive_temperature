@@ -1,8 +1,0 @@
-{
-  "last_completed_index": 7472,
-  "total_processed": 7473,
-  "total_pairs": 2458,
-  "total_skipped_no_contrast": 5015,
-  "total_skipped_bad_ground_truth": 0,
-  "total_unparseable_generations": 854
-}
