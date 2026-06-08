@@ -29,6 +29,7 @@ __pycache__/
 **/datasets/*.jsonl
 **/datasets/*.checkpoint.json
 **/datasets/*.skipped.jsonl
+**/datasets/*.readable.txt
 **/datasets/*.tmp
 **/results/**/*.jsonl
 

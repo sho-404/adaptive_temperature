@@ -11,10 +11,27 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import logging
+
 import torch
 from transformers import Mistral3ForConditionalGeneration, MistralCommonBackend
+from transformers.utils import logging as hf_logging
 
 HERE = Path(__file__).parent
+
+
+# Mute ONLY the harmless, repeated "Both max_new_tokens and max_length seem to
+# have been set" generation warning. All other transformers logging is kept.
+class _DropMaxLengthWarning(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not ("max_new_tokens" in msg and "max_length" in msg)
+
+
+_hf_root = hf_logging.get_logger()  # configures + returns the 'transformers' logger
+_hf_root.addFilter(_DropMaxLengthWarning())
+for _h in _hf_root.handlers:        # child loggers propagate to these handlers
+    _h.addFilter(_DropMaxLengthWarning())
 
 
 # ============================================================

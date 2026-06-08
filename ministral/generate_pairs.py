@@ -98,13 +98,17 @@ class Sweep:
     def rate_str(self, t: float) -> str:
         return f"{self.correct[t]}/{self.total[t]}" if self.total[t] else "n/a"
 
-    def representative(self, t: float, prefer_correct: bool) -> tuple[str | None, str | None]:
-        order = (self.first_correct, self.first_incorrect) if prefer_correct \
-            else (self.first_incorrect, self.first_correct)
-        for bucket in order:
+    def representative(self, t: float, prefer_correct: bool) -> tuple[str | None, str | None, bool | None]:
+        """Return (answer, response, was_correct) for one stored sample at t.
+        prefer_correct picks a correct sample first; otherwise a FAILED one
+        first (so a rejected pair can show what actually went wrong)."""
+        order = ((True, self.first_correct), (False, self.first_incorrect)) if prefer_correct \
+            else ((False, self.first_incorrect), (True, self.first_correct))
+        for was_correct, bucket in order:
             if t in bucket:
-                return bucket[t]
-        return None, None
+                answer, response = bucket[t]
+                return answer, response, was_correct
+        return None, None, None
 
 
 # ============================================================
@@ -134,6 +138,25 @@ def save_checkpoint(path: Path, state: dict) -> None:
     os.replace(tmp, path)
 
 
+def fmt_time(seconds: float) -> str:
+    s = int(seconds)
+    h, r = divmod(s, 3600)
+    m, s = divmod(r, 60)
+    if h:
+        return f"{h}h{m:02d}m"
+    if m:
+        return f"{m}m{s:02d}s"
+    return f"{s}s"
+
+
+def progress_str(done: int, total: int, start: float) -> str:
+    elapsed = time.perf_counter() - start
+    pct = 100 * done / total if total else 100.0
+    rate = done / elapsed if elapsed > 0 else 0.0
+    eta = (total - done) / rate if rate > 0 else 0.0
+    return f"{done}/{total} {pct:.0f}% | elapsed {fmt_time(elapsed)} eta {fmt_time(eta)}"
+
+
 def temperature_stats(sweep: Sweep) -> list[dict]:
     rows = []
     for t in sweep.grid:
@@ -145,9 +168,22 @@ def temperature_stats(sweep: Sweep) -> list[dict]:
     return rows
 
 
+def _indent(text: str | None, prefix: str = "    ") -> str:
+    if not text:
+        return prefix + "(no response captured)"
+    return "\n".join(prefix + line for line in text.splitlines())
+
+
+def _attempt_label(was_correct: bool | None) -> str:
+    if was_correct is None:
+        return "no attempt captured"
+    return "a CORRECT attempt" if was_correct else "a FAILED attempt"
+
+
 def readable_block(idx: int, total: int, question: str, gt, mode: str,
                    sweep: Sweep, chosen_t: float, rejected_t: float,
-                   chosen_ans, rejected_ans) -> str:
+                   chosen_ans, rejected_ans, chosen_resp, rejected_resp,
+                   chosen_ok, rejected_ok) -> str:
     lines = ["=" * 70,
              f"[{idx + 1}/{total}]  {question.strip()}",
              f"correct answer: {gt}",
@@ -164,6 +200,12 @@ def readable_block(idx: int, total: int, question: str, gt, mode: str,
     lines += ["preference pair:",
               f"  chosen   tau={chosen_t}  ({sweep.rate_str(chosen_t)})  answer={chosen_ans}",
               f"  rejected tau={rejected_t}  ({sweep.rate_str(rejected_t)})  answer={rejected_ans}",
+              "",
+              f"  --- chosen response  (tau={chosen_t}, {_attempt_label(chosen_ok)}) ---",
+              _indent(chosen_resp),
+              "",
+              f"  --- rejected response (tau={rejected_t}, {_attempt_label(rejected_ok)}) ---",
+              _indent(rejected_resp),
               "", ""]
     return "\n".join(lines)
 
@@ -211,14 +253,18 @@ def main() -> None:
 
     ckpt = load_checkpoint(ckpt_path)
     start_idx = ckpt["last_completed_index"] + 1
-    print(f"Examples      : {total}  (starting at index {start_idx})")
+    to_process = sum(1 for ex in examples if ex["index"] >= start_idx)
+    print(f"Examples      : {total}  (starting at index {start_idx}, {to_process} to process)")
     print(f"Output        : {pairs_path}\n")
 
     start = time.perf_counter()
+    processed = 0
     for ex in examples:
         idx = ex["index"]
         if idx < start_idx:
             continue
+        processed += 1
+        prog = progress_str(processed, to_process, start)
         gt = ex["ground_truth"]
 
         if gt is None:
@@ -226,7 +272,7 @@ def main() -> None:
             ckpt["total_skipped"] += 1
             ckpt["last_completed_index"] = idx
             save_checkpoint(ckpt_path, ckpt)
-            print(f"[{idx + 1}/{total}] skipped bad ground truth")
+            print(f"[{prog}] idx={idx} skipped bad ground truth")
             continue
 
         messages = task.build_messages(ex["question"])
@@ -255,7 +301,8 @@ def main() -> None:
             if sweep.rate(0.0) - worst_rate > 0:  # contrast exists
                 mode = "easy"
                 chosen_t = 0.0
-                rejected_t = max(t for t in ran if sweep.rate(t) == worst_rate)  # ties -> hottest
+                worst = [t for t in ran if sweep.rate(t) == worst_rate]
+                rejected_t = rng.choice(worst)  # ties -> random (no hottest-temp bias)
             # else: every nonzero temp is also 100% -> no contrast -> skip below
         else:
             # HARD: round-robin race. Finish each round, pick chosen at random
@@ -286,7 +333,7 @@ def main() -> None:
             ckpt["total_skipped"] += 1
             ckpt["last_completed_index"] = idx
             save_checkpoint(ckpt_path, ckpt)
-            print(f"[{idx + 1}/{total}] skipped (no contrast)")
+            print(f"[{prog}] idx={idx} skipped (no contrast)")
             continue
 
         if chosen_t == rejected_t:  # must never happen; defensive
@@ -298,12 +345,12 @@ def main() -> None:
             ckpt["total_skipped"] += 1
             ckpt["last_completed_index"] = idx
             save_checkpoint(ckpt_path, ckpt)
-            print(f"[{idx + 1}/{total}] skipped (degenerate pair tau={chosen_t})")
+            print(f"[{prog}] idx={idx} skipped (degenerate pair tau={chosen_t})")
             continue
 
-        # --- representative responses ---
-        chosen_ans, chosen_resp = sweep.representative(chosen_t, prefer_correct=True)
-        rejected_ans, rejected_resp = sweep.representative(rejected_t, prefer_correct=False)
+        # --- representative responses (rejected = a FAILED attempt) ---
+        chosen_ans, chosen_resp, chosen_ok = sweep.representative(chosen_t, prefer_correct=True)
+        rejected_ans, rejected_resp, rejected_ok = sweep.representative(rejected_t, prefer_correct=False)
 
         append_jsonl(pairs_path, {
             "index": idx,
@@ -315,23 +362,24 @@ def main() -> None:
             "seed": base_seed + idx * 100_000,
             "chosen": {
                 "temperature": chosen_t, "rate": sweep.rate_str(chosen_t),
-                "answer": chosen_ans, "response": chosen_resp,
+                "answer": chosen_ans, "response": chosen_resp, "was_correct": chosen_ok,
             },
             "rejected": {
                 "temperature": rejected_t, "rate": sweep.rate_str(rejected_t),
-                "answer": rejected_ans, "response": rejected_resp,
+                "answer": rejected_ans, "response": rejected_resp, "was_correct": rejected_ok,
             },
             "temperature_stats": temperature_stats(sweep),
         })
         append_text(readable_path, readable_block(
             idx, total, ex["question"], gt, mode, sweep,
-            chosen_t, rejected_t, chosen_ans, rejected_ans))
+            chosen_t, rejected_t, chosen_ans, rejected_ans,
+            chosen_resp, rejected_resp, chosen_ok, rejected_ok))
 
         ckpt["total_pairs"] += 1
         ckpt[mode] = ckpt.get(mode, 0) + 1
         ckpt["last_completed_index"] = idx
         save_checkpoint(ckpt_path, ckpt)
-        print(f"[{idx + 1}/{total}] {mode}: chosen tau={chosen_t} ({sweep.rate_str(chosen_t)}) "
+        print(f"[{prog}] {mode}: chosen tau={chosen_t} ({sweep.rate_str(chosen_t)}) "
               f"vs rejected tau={rejected_t} ({sweep.rate_str(rejected_t)}) | pairs={ckpt['total_pairs']}")
 
     print(f"\nDone in {time.perf_counter() - start:.0f}s. "

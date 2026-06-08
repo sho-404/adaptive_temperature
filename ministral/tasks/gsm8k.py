@@ -142,6 +142,24 @@ def parse_decimal(text: str) -> Decimal | None:
         return None
 
 
+def parse_marker_value(text: str) -> Decimal | None:
+    """Parse the number from an explicit final-answer marker line.
+
+    Gated on a #### / "final answer:" marker, so it is safe to tolerate trailing
+    units or words the model added against instructions (e.g. "72 clips"): try a
+    strict parse first, then fall back to the last number on the line. This stops
+    a correct answer being marked wrong purely over formatting (a false negative
+    that would otherwise pollute the preference pairs).
+    """
+    value = parse_decimal(text)
+    if value is not None:
+        return value
+    nums = re.findall(r"-?\d[\d,]*(?:\.\d+)?", text.replace("$", ""))
+    if nums:
+        return parse_decimal(nums[-1])
+    return None
+
+
 def extract_ground_truth(answer: str) -> Decimal | None:
     match = re.search(r"####\s*([^\n]+)", answer)
     if not match:
@@ -160,13 +178,13 @@ def extract_answer(response: str) -> tuple[Decimal | None, str]:
     for pattern in marker_patterns:
         matches = re.findall(pattern, response)
         if matches:
-            value = parse_decimal(matches[-1])
+            value = parse_marker_value(matches[-1])
             if value is not None:
                 return value, "explicit_marker"
 
     boxed = re.findall(r"\\boxed\{([^{}]+)\}", response)
     if boxed:
-        value = parse_decimal(boxed[-1])
+        value = parse_marker_value(boxed[-1])
         if value is not None:
             return value, "boxed"
 
