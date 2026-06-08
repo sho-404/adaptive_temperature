@@ -1,21 +1,48 @@
 """Generate LPO preference pairs for ONE task and ONE language.
 
-For each example, samples several responses at random temperatures from the grid,
-then forms a preference pair: a CORRECT response (chosen) vs an INCORRECT one
-(rejected). Pairs are the training signal for the adaptive-temperature MLP.
+Each example becomes a (chosen_temperature, rejected_temperature) preference
+pair: evidence that, for this prompt, the chosen temperature beats the rejected
+one. Those pairs are the training signal for the adaptive-temperature MLP.
 
-Writes:
-    datasets/<task>_<lang>.jsonl              the preference pairs
-    datasets/<task>_<lang>.checkpoint.json    resume state
-    datasets/<task>_<lang>.skipped.jsonl      examples with no usable pair
+Selection per example (greedy is deterministic, so it is run ONCE):
 
-Generation goes through Ollama (no hidden states needed here — only responses,
-their temperatures, and correctness). The task-specific parts (prompt, answer
-parsing, scoring) come from tasks/<task>.py.
+    run tau=0 once
+    |
+    +-- CORRECT  -> EASY case
+    |     Sweep every nonzero temperature k_easy times to measure each one's
+    |     success rate. chosen = tau=0 (a guaranteed 100%, and the lowest temp);
+    |     rejected = the WORST nonzero temperature (lowest rate, ties -> hottest).
+    |     Skip the example if every nonzero temp is also 100% (no contrast).
+    |
+    +-- WRONG    -> HARD case (round-robin race)
+          For each round, sample every nonzero temperature ONCE. As soon as a
+          round produces at least one correct answer, pick the chosen at RANDOM
+          among that round's winners (equal one-shot per temp -> no ordering
+          bias) and stop. rejected = tau=0, which is PROVABLY hopeless here:
+          greedy is deterministic, so it fails forever on this problem.
+          |
+          +-- no round ever wins (k_hard rounds, all temps wrong) -> ALL-FAIL
+                chosen = the hottest temperature (an injected prior: "if greedy
+                is hopeless, lean fully stochastic"); rejected = tau=0. This pair
+                is not measured signal, so it bypasses the contrast check.
+
+tau=0 is NEVER both chosen and rejected: it is chosen only in the EASY case
+(where rejected is drawn from nonzero temps only) and rejected only in the
+HARD / ALL-FAIL cases (where chosen is nonzero).
+
+Generation runs through THIS container's HF backend (ministral/model.py). The
+task-specific parts (prompt, answer parsing, scoring) come from tasks/<task>.py.
+
+Writes (under datasets/):
+    <task>_<lang>.jsonl              the preference pairs (+ per-temperature stats)
+    <task>_<lang>.readable.txt       human-readable view of every example
+    <task>_<lang>.checkpoint.json    resume state
+    <task>_<lang>.skipped.jsonl      examples with no usable pair
 
 Usage:
     python generate_pairs.py --task gsm8k --lang en
-    python generate_pairs.py --task gsm8k --lang en --limit 200
+    python generate_pairs.py --task gsm8k --lang en --limit 5          # sanity check
+    python generate_pairs.py --task gsm8k --lang en --k-easy 5 --k-hard 20
 """
 
 from __future__ import annotations
@@ -26,104 +53,62 @@ import json
 import os
 import random
 import time
-from decimal import Decimal
 from pathlib import Path
 
-import requests
+import model as M
 
 HERE = Path(__file__).parent
 SPLIT = "train"  # preference pairs are built from the train split
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_SHOW_URL = "http://localhost:11434/api/show"
-
-N_RESPONSES = 16   # max generations per example
-MIN_RESPONSES = 3  # min before early-stopping once a correct/incorrect contrast exists
-MAX_RETRIES = 3
-
-
-def load_config() -> dict:
-    return json.loads((HERE / "config.json").read_text(encoding="utf-8"))
+K_EASY = 5   # samples per nonzero temperature when greedy already solves it
+K_HARD = 20  # max round-robin rounds when greedy fails
 
 
 # ============================================================
-# Ollama
+# Per-example sweep
 # ============================================================
 
-def check_model(model: str) -> None:
-    try:
-        requests.post(OLLAMA_SHOW_URL, json={"model": model}, timeout=30).raise_for_status()
-    except Exception as e:  # noqa: BLE001
-        raise RuntimeError(
-            f"Ollama model not available: {model}\nRun:  ollama pull {model}\n\nOriginal error: {e}"
-        )
+class Sweep:
+    """Accumulates samples per temperature and remembers a representative
+    correct / incorrect response for each, so a pair can cite real text."""
 
+    def __init__(self, grid: list[float]) -> None:
+        self.grid = grid
+        self.total = {t: 0 for t in grid}
+        self.correct = {t: 0 for t in grid}
+        self.first_correct: dict[float, tuple[str | None, str]] = {}
+        self.first_incorrect: dict[float, tuple[str | None, str]] = {}
 
-def ollama_generate(model: str, prompt: str, temperature: float, max_tokens: int) -> str:
-    payload = {
-        "model": model,
-        "prompt": prompt,
-        "stream": False,
-        "options": {"temperature": temperature, "num_predict": max_tokens},
-    }
-    r = requests.post(OLLAMA_URL, json=payload, timeout=300)
-    r.raise_for_status()
-    return r.json()["response"].strip()
+    def record(self, task, t: float, response: str, gt) -> bool:
+        parsed, _ = task.extract_answer(response)
+        ok = task.is_correct(parsed, gt)
+        answer = str(parsed) if parsed is not None else None
+        self.total[t] += 1
+        self.correct[t] += int(ok)
+        bucket = self.first_correct if ok else self.first_incorrect
+        bucket.setdefault(t, (answer, response))
+        return ok
 
+    def ran(self, t: float) -> bool:
+        return self.total[t] > 0
 
-# ============================================================
-# Candidate generation / pair selection (task-agnostic)
-# ============================================================
+    def rate(self, t: float) -> float:
+        return self.correct[t] / self.total[t] if self.total[t] else 0.0
 
-def generate_candidates(task, model, prompt, ground_truth, grid, max_tokens) -> list[dict]:
-    """Sample responses at random temperatures; stop early once we have a
-    correct AND an incorrect parsed answer (and at least MIN_RESPONSES)."""
-    candidates: list[dict] = []
-    for sample_id in range(N_RESPONSES):
-        tau = random.choice(grid)
-        response = ollama_generate(model, prompt, tau, max_tokens)
-        parsed, status = task.extract_answer(response)
-        candidates.append({
-            "sample_id": sample_id, "temperature": tau, "response": response,
-            "parsed_answer": str(parsed) if parsed is not None else None,
-            "parse_status": status,
-        })
+    def rate_str(self, t: float) -> str:
+        return f"{self.correct[t]}/{self.total[t]}" if self.total[t] else "n/a"
 
-        correct = incorrect = 0
-        for c in candidates:
-            if c["parsed_answer"] is None:
-                continue
-            if task.is_correct(Decimal(c["parsed_answer"]), ground_truth):
-                correct += 1
-            else:
-                incorrect += 1
-        if len(candidates) >= MIN_RESPONSES and correct > 0 and incorrect > 0:
-            break
-    return candidates
-
-
-def select_pair(task, candidates, ground_truth) -> dict | None:
-    correct, incorrect, unparseable = [], [], []
-    for c in candidates:
-        if c["parsed_answer"] is None:
-            unparseable.append(c)
-        elif task.is_correct(Decimal(c["parsed_answer"]), ground_truth):
-            correct.append(c)
-        else:
-            incorrect.append(c)
-    if not correct or not incorrect:
-        return None
-    return {
-        "chosen": random.choice(correct),
-        "rejected": random.choice(incorrect),
-        "num_correct": len(correct),
-        "num_incorrect": len(incorrect),
-        "num_unparseable": len(unparseable),
-    }
+    def representative(self, t: float, prefer_correct: bool) -> tuple[str | None, str | None]:
+        order = (self.first_correct, self.first_incorrect) if prefer_correct \
+            else (self.first_incorrect, self.first_correct)
+        for bucket in order:
+            if t in bucket:
+                return bucket[t]
+        return None, None
 
 
 # ============================================================
-# Checkpoint / IO
+# IO / checkpoint
 # ============================================================
 
 def append_jsonl(path: Path, record: dict) -> None:
@@ -131,16 +116,56 @@ def append_jsonl(path: Path, record: dict) -> None:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def append_text(path: Path, block: str) -> None:
+    with path.open("a", encoding="utf-8") as f:
+        f.write(block)
+
+
 def load_checkpoint(path: Path) -> dict:
     if path.exists():
         return json.loads(path.read_text())
-    return {"last_completed_index": -1, "total_pairs": 0, "total_skipped": 0}
+    return {"last_completed_index": -1, "total_pairs": 0, "total_skipped": 0,
+            "easy": 0, "hard": 0, "all_fail": 0}
 
 
 def save_checkpoint(path: Path, state: dict) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
     os.replace(tmp, path)
+
+
+def temperature_stats(sweep: Sweep) -> list[dict]:
+    rows = []
+    for t in sweep.grid:
+        if sweep.ran(t):
+            rows.append({"temperature": t, "ran": True,
+                         "correct": sweep.correct[t], "total": sweep.total[t]})
+        else:
+            rows.append({"temperature": t, "ran": False, "correct": None, "total": None})
+    return rows
+
+
+def readable_block(idx: int, total: int, question: str, gt, mode: str,
+                   sweep: Sweep, chosen_t: float, rejected_t: float,
+                   chosen_ans, rejected_ans) -> str:
+    lines = ["=" * 70,
+             f"[{idx + 1}/{total}]  {question.strip()}",
+             f"correct answer: {gt}",
+             f"mode: {mode}",
+             "temperature sweep:"]
+    for t in sweep.grid:
+        tag = ""
+        if t == chosen_t:
+            tag = "   <- chosen"
+        elif t == rejected_t:
+            tag = "   <- rejected"
+        rate = sweep.rate_str(t) if sweep.ran(t) else "(not run)"
+        lines.append(f"  t={t:<4} {rate}{tag}")
+    lines += ["preference pair:",
+              f"  chosen   tau={chosen_t}  ({sweep.rate_str(chosen_t)})  answer={chosen_ans}",
+              f"  rejected tau={rejected_t}  ({sweep.rate_str(rejected_t)})  answer={rejected_ans}",
+              "", ""]
+    return "\n".join(lines)
 
 
 # ============================================================
@@ -151,24 +176,34 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--task", default="gsm8k")
     ap.add_argument("--lang", default="en")
-    ap.add_argument("--limit", type=int, default=None, help="process only the first N examples")
+    ap.add_argument("--limit", type=int, default=None, help="process only the first N examples (sanity check)")
+    ap.add_argument("--k-easy", type=int, default=K_EASY, help="samples per nonzero temp when greedy is correct")
+    ap.add_argument("--k-hard", type=int, default=K_HARD, help="max round-robin rounds when greedy fails")
     args = ap.parse_args()
 
     task = importlib.import_module(f"tasks.{args.task}")  # lazy: only the requested task
-    cfg = load_config()
-    model = cfg["ollama_model"]
-    grid = [float(t) for t in cfg["temperature_grid"]]
-    max_tokens = int(cfg["max_new_tokens"])
+    cfg = M.load_config()
 
-    random.seed(int(cfg["seed"]))
-    check_model(model)
+    device = M.get_device(cfg.get("device", "auto"))
+    dtype = M.get_dtype(cfg["dtype_name"])
+    grid = [float(t) for t in cfg["temperature_grid"]]
+    if 0.0 not in grid:
+        raise ValueError("temperature_grid must include 0.0 (greedy) for this scheme.")
+    nonzero = [t for t in grid if t > 0.0]  # ascending
+    base_seed = int(cfg["seed"])
 
     out_dir = HERE / "datasets"
     out_dir.mkdir(parents=True, exist_ok=True)
     pairs_path = out_dir / f"{args.task}_{args.lang}.jsonl"
     ckpt_path = out_dir / f"{args.task}_{args.lang}.checkpoint.json"
     skipped_path = out_dir / f"{args.task}_{args.lang}.skipped.jsonl"
+    readable_path = out_dir / f"{args.task}_{args.lang}.readable.txt"
 
+    print(f"Task / lang   : {args.task} / {args.lang}")
+    print(f"Device / dtype: {device} / {dtype}")
+    print(f"Temperatures  : {grid}  (k_easy={args.k_easy}, k_hard={args.k_hard})")
+
+    tokenizer, mdl = M.load_model(cfg, device, dtype)
     examples = task.load(args.lang, SPLIT)
     if args.limit is not None:
         examples = examples[: args.limit]
@@ -176,11 +211,8 @@ def main() -> None:
 
     ckpt = load_checkpoint(ckpt_path)
     start_idx = ckpt["last_completed_index"] + 1
-
-    print(f"Task / lang : {args.task} / {args.lang}")
-    print(f"Ollama model: {model}")
-    print(f"Examples    : {total}  (starting at index {start_idx})")
-    print(f"Output      : {pairs_path}\n")
+    print(f"Examples      : {total}  (starting at index {start_idx})")
+    print(f"Output        : {pairs_path}\n")
 
     start = time.perf_counter()
     for ex in examples:
@@ -197,58 +229,116 @@ def main() -> None:
             print(f"[{idx + 1}/{total}] skipped bad ground truth")
             continue
 
-        candidates = None
-        for attempt in range(MAX_RETRIES):
-            try:
-                candidates = generate_candidates(task, model, task.build_prompt(ex["question"]), gt, grid, max_tokens)
-                break
-            except Exception as e:  # noqa: BLE001
-                print(f"[{idx + 1}/{total}] generation error {attempt + 1}/{MAX_RETRIES}: {e}")
-                time.sleep(3)
+        messages = task.build_messages(ex["question"])
+        sweep = Sweep(grid)
+        rng = random.Random(base_seed + idx)   # reproducible random tie-break per example
+        sweep_seed = base_seed + idx * 100_000  # distinct generation seeds per example
 
-        if candidates is None:
-            append_jsonl(skipped_path, {"index": idx, "reason": "generation_failed"})
+        # --- greedy, once ---
+        r0 = M.generate_samples(mdl, tokenizer, messages, 0.0, 1, device, cfg, sweep_seed)
+        sweep_seed += 1
+        t0_correct = sweep.record(task, 0.0, r0[0], gt)
+
+        mode = None
+        chosen_t = rejected_t = None
+
+        if t0_correct:
+            # EASY: full sweep of nonzero temps to find the worst one.
+            for t in nonzero:
+                resps = M.generate_samples(mdl, tokenizer, messages, t, args.k_easy, device, cfg, sweep_seed)
+                sweep_seed += 1
+                for r in resps:
+                    sweep.record(task, t, r, gt)
+
+            ran = [t for t in nonzero if sweep.ran(t)]
+            worst_rate = min(sweep.rate(t) for t in ran)
+            if sweep.rate(0.0) - worst_rate > 0:  # contrast exists
+                mode = "easy"
+                chosen_t = 0.0
+                rejected_t = max(t for t in ran if sweep.rate(t) == worst_rate)  # ties -> hottest
+            # else: every nonzero temp is also 100% -> no contrast -> skip below
+        else:
+            # HARD: round-robin race. Finish each round, pick chosen at random
+            # among that round's winners.
+            for _round in range(args.k_hard):
+                winners = []
+                for t in nonzero:
+                    r = M.generate_samples(mdl, tokenizer, messages, t, 1, device, cfg, sweep_seed)
+                    sweep_seed += 1
+                    if sweep.record(task, t, r[0], gt):
+                        winners.append(t)
+                if winners:
+                    chosen_t = rng.choice(winners)
+                    rejected_t = 0.0
+                    mode = "hard"
+                    break
+            if chosen_t is None:
+                mode = "all_fail"
+                chosen_t = nonzero[-1]  # hottest temperature (injected prior)
+                rejected_t = 0.0
+
+        # --- guards ---
+        if chosen_t is None or rejected_t is None:
+            append_jsonl(skipped_path, {
+                "index": idx, "reason": "no_contrast", "question": ex["question"],
+                "ground_truth": str(gt), "temperature_stats": temperature_stats(sweep),
+            })
             ckpt["total_skipped"] += 1
             ckpt["last_completed_index"] = idx
             save_checkpoint(ckpt_path, ckpt)
-            print(f"[{idx + 1}/{total}] skipped generation failed")
+            print(f"[{idx + 1}/{total}] skipped (no contrast)")
             continue
 
-        pair = select_pair(task, candidates, gt)
-        if pair is None:
+        if chosen_t == rejected_t:  # must never happen; defensive
             append_jsonl(skipped_path, {
-                "index": idx, "reason": "no_correct_incorrect_contrast",
-                "question": ex["question"], "ground_truth": str(gt),
-                "num_generated": len(candidates), "candidates": candidates,
+                "index": idx, "reason": "degenerate_same_temp", "question": ex["question"],
+                "ground_truth": str(gt), "chosen_temperature": chosen_t,
+                "temperature_stats": temperature_stats(sweep),
             })
             ckpt["total_skipped"] += 1
-            status = f"skipped no contrast (generated {len(candidates)})"
-        else:
-            append_jsonl(pairs_path, {
-                "index": idx, "question": ex["question"], "ground_truth": str(gt),
-                "chosen_response": pair["chosen"]["response"],
-                "chosen_temperature": pair["chosen"]["temperature"],
-                "chosen_answer": pair["chosen"]["parsed_answer"],
-                "rejected_response": pair["rejected"]["response"],
-                "rejected_temperature": pair["rejected"]["temperature"],
-                "rejected_answer": pair["rejected"]["parsed_answer"],
-                "num_generated": len(candidates),
-                "stopped_early": len(candidates) < N_RESPONSES,
-                "num_correct": pair["num_correct"], "num_incorrect": pair["num_incorrect"],
-                "num_unparseable": pair["num_unparseable"],
-                "all_candidates": candidates,
-            })
-            ckpt["total_pairs"] += 1
-            status = (f"saved pair (correct={pair['num_correct']} "
-                      f"incorrect={pair['num_incorrect']})")
+            ckpt["last_completed_index"] = idx
+            save_checkpoint(ckpt_path, ckpt)
+            print(f"[{idx + 1}/{total}] skipped (degenerate pair tau={chosen_t})")
+            continue
 
+        # --- representative responses ---
+        chosen_ans, chosen_resp = sweep.representative(chosen_t, prefer_correct=True)
+        rejected_ans, rejected_resp = sweep.representative(rejected_t, prefer_correct=False)
+
+        append_jsonl(pairs_path, {
+            "index": idx,
+            "question": ex["question"],
+            "ground_truth": str(gt),
+            "mode": mode,
+            "k_easy": args.k_easy,
+            "k_hard": args.k_hard,
+            "seed": base_seed + idx * 100_000,
+            "chosen": {
+                "temperature": chosen_t, "rate": sweep.rate_str(chosen_t),
+                "answer": chosen_ans, "response": chosen_resp,
+            },
+            "rejected": {
+                "temperature": rejected_t, "rate": sweep.rate_str(rejected_t),
+                "answer": rejected_ans, "response": rejected_resp,
+            },
+            "temperature_stats": temperature_stats(sweep),
+        })
+        append_text(readable_path, readable_block(
+            idx, total, ex["question"], gt, mode, sweep,
+            chosen_t, rejected_t, chosen_ans, rejected_ans))
+
+        ckpt["total_pairs"] += 1
+        ckpt[mode] = ckpt.get(mode, 0) + 1
         ckpt["last_completed_index"] = idx
         save_checkpoint(ckpt_path, ckpt)
-        print(f"[{idx + 1}/{total}] {status} | pairs={ckpt['total_pairs']}")
+        print(f"[{idx + 1}/{total}] {mode}: chosen tau={chosen_t} ({sweep.rate_str(chosen_t)}) "
+              f"vs rejected tau={rejected_t} ({sweep.rate_str(rejected_t)}) | pairs={ckpt['total_pairs']}")
 
     print(f"\nDone in {time.perf_counter() - start:.0f}s. "
-          f"pairs={ckpt['total_pairs']} skipped={ckpt['total_skipped']}")
-    print(f"Pairs -> {pairs_path}")
+          f"pairs={ckpt['total_pairs']} skipped={ckpt['total_skipped']} "
+          f"(easy={ckpt.get('easy', 0)} hard={ckpt.get('hard', 0)} all_fail={ckpt.get('all_fail', 0)})")
+    print(f"Pairs    -> {pairs_path}")
+    print(f"Readable -> {readable_path}")
 
 
 if __name__ == "__main__":
