@@ -185,3 +185,56 @@ def generate_samples(model, tokenizer, messages, temperature, k, device, cfg, se
         truncated = bool(eos_ids) and not (eos_ids & set(gen.tolist()))
         results.append((text, truncated))
     return results
+
+
+# ============================================================
+# vLLM backend (high-throughput; same model, batched generation)
+# ============================================================
+#
+# vLLM changes only HOW samples are produced (many concurrent generations via
+# continuous batching) — never WHICH samples or how pairs are selected. The
+# driver still does greedy triage -> easy sweep -> hard round-robin race, and
+# passes a list of (temperature, seed) "specs" per prompt; we run them as one
+# batched call. Each spec maps 1:1 to one returned (text, truncated), in order.
+
+def load_vllm(cfg: dict):
+    from vllm import LLM
+
+    source = _resolve_local_or_repo(cfg["model_name_or_path"])
+    max_len = int(cfg["max_prompt_tokens"]) + int(cfg["max_new_tokens"])
+    return LLM(
+        model=source,
+        tokenizer_mode="mistral",   # Ministral uses the tekken (mistral_common) tokenizer
+        dtype=cfg["dtype_name"],
+        max_model_len=max_len,
+        gpu_memory_utilization=0.90,
+    )
+
+
+def vllm_generate(llm, cfg, messages, specs) -> list[tuple[str, bool]]:
+    """Run one prompt at many (temperature, seed) specs in a single batched call.
+
+    Returns a list of (text, truncated) aligned 1:1 with `specs`. truncated is
+    True when vLLM stopped at the token budget (finish_reason == "length")
+    rather than an end-of-sequence token — same meaning as the HF path.
+    """
+    from vllm import SamplingParams
+
+    sampling = [
+        SamplingParams(
+            temperature=max(float(t), 0.0),  # 0.0 -> greedy (deterministic)
+            top_p=1.0,
+            max_tokens=int(cfg["max_new_tokens"]),
+            seed=int(s),
+            n=1,
+        )
+        for (t, s) in specs
+    ]
+    conversations = [messages for _ in specs]
+    outputs = llm.chat(conversations, sampling, use_tqdm=False)
+
+    results: list[tuple[str, bool]] = []
+    for o in outputs:
+        comp = o.outputs[0]
+        results.append((comp.text.strip(), comp.finish_reason == "length"))
+    return results

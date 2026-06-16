@@ -276,6 +276,8 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=None, help="process only the first N examples (sanity check)")
     ap.add_argument("--k-easy", type=int, default=K_EASY, help="samples per nonzero temp when greedy is correct")
     ap.add_argument("--k-hard", type=int, default=K_HARD, help="max round-robin rounds when greedy fails")
+    ap.add_argument("--backend", choices=["vllm", "hf"], default="vllm",
+                    help="vllm = batched, high-throughput (default); hf = transformers fallback (slow)")
     args = ap.parse_args()
 
     task = importlib.import_module(f"tasks.{args.task}")  # lazy: only the requested task
@@ -299,8 +301,24 @@ def main() -> None:
     print(f"Task / lang   : {args.task} / {args.lang}")
     print(f"Device / dtype: {device} / {dtype}")
     print(f"Temperatures  : {grid}  (k_easy={args.k_easy}, k_hard={args.k_hard})")
+    print(f"Backend       : {args.backend}")
 
-    tokenizer, mdl = M.load_model(cfg, device, dtype)
+    # gen(messages, specs) -> list[(text, truncated)] aligned 1:1 with specs,
+    # where specs is a list of (temperature, seed). This is the ONLY thing the
+    # two backends differ on; all pair-selection logic below is backend-agnostic.
+    if args.backend == "vllm":
+        llm = M.load_vllm(cfg)
+
+        def gen(messages, specs):
+            return M.vllm_generate(llm, cfg, messages, specs)
+    else:
+        tokenizer, mdl = M.load_model(cfg, device, dtype)
+
+        def gen(messages, specs):
+            # Fallback: one generation per spec (no cross-spec batching).
+            return [M.generate_samples(mdl, tokenizer, messages, t, 1, device, cfg, s)[0]
+                    for (t, s) in specs]
+
     examples = task.load(args.lang, SPLIT)
     if args.limit is not None:
         examples = examples[: args.limit]
@@ -337,22 +355,25 @@ def main() -> None:
 
         # --- greedy, once ---
         print(f"[{prog}] idx={idx} greedy (t=0)...", flush=True)
-        r0 = M.generate_samples(mdl, tokenizer, messages, 0.0, 1, device, cfg, sweep_seed)
+        (text0, trunc0), = gen(messages, [(0.0, sweep_seed)])
         sweep_seed += 1
-        text0, trunc0 = r0[0]
         t0_correct = sweep.record(task, 0.0, text0, trunc0, gt)
 
         mode = None
         chosen_t = rejected_t = None
 
         if t0_correct:
-            # EASY: full sweep of nonzero temps to find the worst one.
-            for ti, t in enumerate(nonzero, 1):
-                print(f"[{prog}] idx={idx} easy sweep: t={t} ({ti}/{len(nonzero)})", flush=True)
-                resps = M.generate_samples(mdl, tokenizer, messages, t, args.k_easy, device, cfg, sweep_seed)
-                sweep_seed += 1
-                for text, trunc in resps:
-                    sweep.record(task, t, text, trunc, gt)
+            # EASY: sweep every nonzero temp k_easy times to find the worst one.
+            # All nonzero x k_easy samples go out in ONE batched call; results map
+            # back to their temperature in spec order. Selection is unchanged.
+            specs = [(t, sweep_seed + i) for i, t in enumerate(
+                t for t in nonzero for _ in range(args.k_easy))]
+            sweep_seed += len(specs)
+            print(f"[{prog}] idx={idx} easy sweep: {len(specs)} samples "
+                  f"({len(nonzero)} temps x {args.k_easy})", flush=True)
+            results = gen(messages, specs)
+            for (t, _seed), (text, trunc) in zip(specs, results):
+                sweep.record(task, t, text, trunc, gt)
 
             ran = [t for t in nonzero if sweep.ran(t)]
             worst_rate = min(sweep.rate(t) for t in ran)
@@ -363,15 +384,18 @@ def main() -> None:
                 rejected_t = rng.choice(worst)  # ties -> random (no hottest-temp bias)
             # else: every nonzero temp is also 100% -> no contrast -> skip below
         else:
-            # HARD: round-robin race. Finish each round, pick chosen at random
-            # among that round's winners.
+            # HARD: round-robin race. Each round = one sample at every nonzero
+            # temp, sent as ONE batched call. Finish the round, then pick the
+            # chosen at random among that round's winners and stop. Identical
+            # semantics to the per-sample loop, just batched per round.
             for _round in range(args.k_hard):
-                print(f"[{prog}] idx={idx} hard race: round {_round + 1}/{args.k_hard}", flush=True)
+                print(f"[{prog}] idx={idx} hard race: round {_round + 1}/{args.k_hard} "
+                      f"({len(nonzero)} temps)", flush=True)
+                specs = [(t, sweep_seed + i) for i, t in enumerate(nonzero)]
+                sweep_seed += len(specs)
+                results = gen(messages, specs)
                 winners = []
-                for t in nonzero:
-                    r = M.generate_samples(mdl, tokenizer, messages, t, 1, device, cfg, sweep_seed)
-                    sweep_seed += 1
-                    text, trunc = r[0]
+                for (t, _seed), (text, trunc) in zip(specs, results):
                     if sweep.record(task, t, text, trunc, gt):
                         winners.append(t)
                 if winners:
