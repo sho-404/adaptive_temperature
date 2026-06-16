@@ -79,13 +79,18 @@ def load(lang: str = "en", split: str = "test") -> list[dict]:
 # Prompts (two shapes: chat messages for HF, plain text for Ollama)
 # ============================================================
 
-_RULES = """Solve the following grade-school math problem step by step.
+_RULES = """Solve the following grade-school math problem step by step. Take as much room as you need to reason.
 
-Rules:
-1. The final line must be exactly: #### <number>
-2. The final answer must contain only the number after ####.
-3. Do not include units in the final answer.
-4. Do not write anything after the final #### line.
+Your answer is ONLY accepted if its VERY LAST line is exactly:
+#### N
+where N is the final numeric answer and nothing else: digits only, no words, no units, no symbols, no extra text.
+For example, if the final answer is 42, the last line must be exactly:
+#### 42
+
+Strict rules:
+1. Use #### ONLY on that final line. Never write #### anywhere else in your response.
+2. Write nothing at all after that final #### line.
+3. If the answer is not in this exact form, it is marked WRONG even if the reasoning is correct. We do not search the rest of the text for a number.
 
 Problem:
 {question}"""
@@ -93,8 +98,9 @@ Problem:
 
 def build_messages(question: str) -> list[dict[str, str]]:
     system = (
-        "You are a careful grade-school math solver. "
-        "You must obey the requested final-answer format exactly."
+        "You are a careful grade-school math solver. You always finish with the "
+        "final answer on its own last line as '#### N' (a single number, digits "
+        "only, no units), and you never write #### anywhere else in the response."
     )
     return [
         {"role": "system", "content": system},
@@ -169,10 +175,15 @@ def extract_ground_truth(answer: str) -> Decimal | None:
 
 def extract_answer(response: str) -> tuple[Decimal | None, str]:
     """Prefer explicit final markers, then boxed answers. Returns (value, status)."""
+    # NOTE: do NOT anchor the marker to the start of the line. Models often emit
+    # the final answer as a numbered list item, e.g. "5. #### 72", and a
+    # ^-anchored pattern would miss it and wrongly count a correct answer as
+    # unparseable. Matching the marker anywhere on the line (then taking the last
+    # match) mirrors the lenient extract_ground_truth above.
     marker_patterns = [
-        r"(?m)^\s*####\s*([^\n]+?)\s*$",
-        r"(?im)^\s*final answer\s*[:=]\s*([^\n]+?)\s*$",
-        r"(?im)^\s*answer\s*[:=]\s*([^\n]+?)\s*$",
+        r"(?m)####\s*([^\n]+?)\s*$",
+        r"(?im)final answer\s*[:=]\s*([^\n]+?)\s*$",
+        r"(?im)answer\s*[:=]\s*([^\n]+?)\s*$",
     ]
 
     for pattern in marker_patterns:

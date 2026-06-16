@@ -86,18 +86,37 @@ def announce_device(device: torch.device, requested: str) -> None:
 # Model loading (specific to this container)
 # ============================================================
 
+def _resolve_local_or_repo(name_or_path: str) -> str:
+    """Prefer a fully-cached LOCAL snapshot so loading never hits the network.
+
+    The MistralCommonBackend tokenizer otherwise issues a list_repo_files HF Hub
+    request that HANGS when unauthenticated (and errors under offline mode). If
+    the model is already cached we resolve to that local directory; only when
+    nothing is cached do we fall back to the repo id (a real network download,
+    which needs HF auth for this gated model).
+    """
+    if Path(name_or_path).exists():
+        return name_or_path
+    try:
+        from huggingface_hub import snapshot_download
+        return snapshot_download(name_or_path, local_files_only=True)
+    except Exception:
+        return name_or_path
+
+
 def load_model(cfg: dict, device: torch.device, dtype: torch.dtype):
-    tokenizer = MistralCommonBackend.from_pretrained(cfg["model_name_or_path"])
+    source = _resolve_local_or_repo(cfg["model_name_or_path"])
+    tokenizer = MistralCommonBackend.from_pretrained(source)
 
     kwargs = dict(dtype=dtype, trust_remote_code=True, low_cpu_mem_usage=True)
     if cfg.get("use_attention_entropy"):
         kwargs["attn_implementation"] = "eager"  # match the adaptive evaluator's path
 
     try:
-        model = Mistral3ForConditionalGeneration.from_pretrained(cfg["model_name_or_path"], **kwargs)
+        model = Mistral3ForConditionalGeneration.from_pretrained(source, **kwargs)
     except TypeError:
         kwargs.pop("attn_implementation", None)
-        model = Mistral3ForConditionalGeneration.from_pretrained(cfg["model_name_or_path"], **kwargs)
+        model = Mistral3ForConditionalGeneration.from_pretrained(source, **kwargs)
 
     model.to(device)
     model.eval()
@@ -114,9 +133,20 @@ def encode(tokenizer, messages, device, max_tokens):
     return inputs
 
 
+def _eos_ids(tokenizer) -> list[int]:
+    e = getattr(tokenizer, "eos_token_id", None)
+    if e is None:
+        return []
+    return list(e) if isinstance(e, (list, tuple)) else [int(e)]
+
+
 @torch.no_grad()
-def generate_samples(model, tokenizer, messages, temperature, k, device, cfg, seed) -> list[str]:
-    """Return k response strings for a prompt at one temperature.
+def generate_samples(model, tokenizer, messages, temperature, k, device, cfg, seed) -> list[tuple[str, bool]]:
+    """Return k (response_text, truncated) tuples for a prompt at one temperature.
+
+    `truncated` is True when the sample hit the max_new_tokens budget WITHOUT
+    emitting an end-of-sequence token (i.e. it was cut off mid-generation, so a
+    missing #### answer line is a truncation artifact, not a real failure).
 
     temperature == 0 -> greedy, which is deterministic, so it is generated ONCE
     regardless of k (sampling it k times would just copy the same text).
@@ -144,4 +174,14 @@ def generate_samples(model, tokenizer, messages, temperature, k, device, cfg, se
 
     torch.manual_seed(int(seed))
     outputs = model.generate(**gen_kwargs)
-    return [tokenizer.decode(o[input_len:], skip_special_tokens=True).strip() for o in outputs]
+
+    eos_ids = set(_eos_ids(tokenizer))
+    results: list[tuple[str, bool]] = []
+    for o in outputs:
+        gen = o[input_len:]
+        text = tokenizer.decode(gen, skip_special_tokens=True).strip()
+        # Finished if an EOS appears in the generated tokens; else it was cut off
+        # at the token budget. (If we can't resolve EOS, assume finished.)
+        truncated = bool(eos_ids) and not (eos_ids & set(gen.tolist()))
+        results.append((text, truncated))
+    return results

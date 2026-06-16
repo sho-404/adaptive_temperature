@@ -76,17 +76,21 @@ class Sweep:
         self.grid = grid
         self.total = {t: 0 for t in grid}
         self.correct = {t: 0 for t in grid}
-        self.first_correct: dict[float, tuple[str | None, str]] = {}
-        self.first_incorrect: dict[float, tuple[str | None, str]] = {}
+        self.truncated = {t: 0 for t in grid}
+        # stored sample = (parsed_answer, full_response, was_truncated)
+        self.first_correct: dict[float, tuple[str | None, str, bool]] = {}
+        self.first_incorrect: dict[float, tuple[str | None, str, bool]] = {}
 
-    def record(self, task, t: float, response: str, gt) -> bool:
+    def record(self, task, t: float, response: str, truncated: bool, gt) -> bool:
         parsed, _ = task.extract_answer(response)
         ok = task.is_correct(parsed, gt)
         answer = str(parsed) if parsed is not None else None
         self.total[t] += 1
         self.correct[t] += int(ok)
+        if truncated:
+            self.truncated[t] += 1
         bucket = self.first_correct if ok else self.first_incorrect
-        bucket.setdefault(t, (answer, response))
+        bucket.setdefault(t, (answer, response, truncated))
         return ok
 
     def ran(self, t: float) -> bool:
@@ -98,17 +102,17 @@ class Sweep:
     def rate_str(self, t: float) -> str:
         return f"{self.correct[t]}/{self.total[t]}" if self.total[t] else "n/a"
 
-    def representative(self, t: float, prefer_correct: bool) -> tuple[str | None, str | None, bool | None]:
-        """Return (answer, response, was_correct) for one stored sample at t.
-        prefer_correct picks a correct sample first; otherwise a FAILED one
-        first (so a rejected pair can show what actually went wrong)."""
+    def representative(self, t: float, prefer_correct: bool) -> tuple[str | None, str | None, bool | None, bool | None]:
+        """Return (answer, response, was_correct, was_truncated) for one stored
+        sample at t. prefer_correct picks a correct sample first; otherwise a
+        FAILED one first (so a rejected pair can show what actually went wrong)."""
         order = ((True, self.first_correct), (False, self.first_incorrect)) if prefer_correct \
             else ((False, self.first_incorrect), (True, self.first_correct))
         for was_correct, bucket in order:
             if t in bucket:
-                answer, response = bucket[t]
-                return answer, response, was_correct
-        return None, None, None
+                answer, response, truncated = bucket[t]
+                return answer, response, was_correct, truncated
+        return None, None, None, None
 
 
 # ============================================================
@@ -161,10 +165,11 @@ def temperature_stats(sweep: Sweep) -> list[dict]:
     rows = []
     for t in sweep.grid:
         if sweep.ran(t):
-            rows.append({"temperature": t, "ran": True,
-                         "correct": sweep.correct[t], "total": sweep.total[t]})
+            rows.append({"temperature": t, "ran": True, "correct": sweep.correct[t],
+                         "total": sweep.total[t], "truncated": sweep.truncated[t]})
         else:
-            rows.append({"temperature": t, "ran": False, "correct": None, "total": None})
+            rows.append({"temperature": t, "ran": False, "correct": None,
+                         "total": None, "truncated": None})
     return rows
 
 
@@ -174,38 +179,88 @@ def _indent(text: str | None, prefix: str = "    ") -> str:
     return "\n".join(prefix + line for line in text.splitlines())
 
 
-def _attempt_label(was_correct: bool | None) -> str:
+def _attempt_label(was_correct: bool | None, was_truncated: bool | None) -> str:
     if was_correct is None:
         return "no attempt captured"
-    return "a CORRECT attempt" if was_correct else "a FAILED attempt"
+    label = "a CORRECT attempt" if was_correct else "a FAILED attempt"
+    if was_truncated:
+        label += ", TRUNCATED at token limit"
+    return label
+
+
+def skip_samples(sweep: Sweep) -> list[dict]:
+    """Per-temperature representative sample (answer + full response) for a
+    skipped example, so a skip is auditable without re-running anything."""
+    out = []
+    for t in sweep.grid:
+        if not sweep.ran(t):
+            out.append({"temperature": t, "ran": False})
+            continue
+        ans, resp, ok, trunc = sweep.representative(t, prefer_correct=True)
+        out.append({"temperature": t, "ran": True, "correct": sweep.correct[t],
+                    "total": sweep.total[t], "parsed_answer": ans,
+                    "was_correct": ok, "truncated": trunc, "response": resp})
+    return out
+
+
+def readable_skip_block(idx: int, total: int, question: str, gt, reason: str, sweep: Sweep) -> str:
+    lines = ["=" * 70,
+             f"[{idx + 1}/{total}]  {question.strip()}",
+             f"correct answer: {gt}",
+             f"mode: SKIPPED ({reason})",
+             "temperature sweep (correct/total, [T]=#truncated):"]
+    for t in sweep.grid:
+        if sweep.ran(t):
+            trunc = f" [T={sweep.truncated[t]}]" if sweep.truncated[t] else ""
+            lines.append(f"  t={t:<4} {sweep.rate_str(t)}{trunc}")
+        else:
+            lines.append(f"  t={t:<4} (not run)")
+    lines.append("per-temperature sample responses (one example each):")
+    for t in sweep.grid:
+        if not sweep.ran(t):
+            continue
+        ans, resp, ok, trunc = sweep.representative(t, prefer_correct=True)
+        tnote = ", TRUNCATED" if trunc else ""
+        lines.append(f"  --- t={t} (parsed: {ans}, {'correct' if ok else 'WRONG'}{tnote}) ---")
+        lines.append(_indent(resp))
+        lines.append(f"  parsed answer: {ans}")
+        lines.append("")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def readable_block(idx: int, total: int, question: str, gt, mode: str,
                    sweep: Sweep, chosen_t: float, rejected_t: float,
                    chosen_ans, rejected_ans, chosen_resp, rejected_resp,
-                   chosen_ok, rejected_ok) -> str:
+                   chosen_ok, rejected_ok, chosen_trunc, rejected_trunc) -> str:
     lines = ["=" * 70,
              f"[{idx + 1}/{total}]  {question.strip()}",
              f"correct answer: {gt}",
              f"mode: {mode}",
-             "temperature sweep:"]
+             "temperature sweep (correct/total, [T]=#truncated):"]
     for t in sweep.grid:
         tag = ""
         if t == chosen_t:
             tag = "   <- chosen"
         elif t == rejected_t:
             tag = "   <- rejected"
-        rate = sweep.rate_str(t) if sweep.ran(t) else "(not run)"
+        if sweep.ran(t):
+            trunc = f" [T={sweep.truncated[t]}]" if sweep.truncated[t] else ""
+            rate = f"{sweep.rate_str(t)}{trunc}"
+        else:
+            rate = "(not run)"
         lines.append(f"  t={t:<4} {rate}{tag}")
     lines += ["preference pair:",
-              f"  chosen   tau={chosen_t}  ({sweep.rate_str(chosen_t)})  answer={chosen_ans}",
-              f"  rejected tau={rejected_t}  ({sweep.rate_str(rejected_t)})  answer={rejected_ans}",
+              f"  chosen   tau={chosen_t}  ({sweep.rate_str(chosen_t)})  parsed answer={chosen_ans}",
+              f"  rejected tau={rejected_t}  ({sweep.rate_str(rejected_t)})  parsed answer={rejected_ans}",
               "",
-              f"  --- chosen response  (tau={chosen_t}, {_attempt_label(chosen_ok)}) ---",
+              f"  --- chosen: complete response (tau={chosen_t}, {_attempt_label(chosen_ok, chosen_trunc)}) ---",
               _indent(chosen_resp),
+              f"  parsed answer: {chosen_ans}",
               "",
-              f"  --- rejected response (tau={rejected_t}, {_attempt_label(rejected_ok)}) ---",
+              f"  --- rejected: complete response (tau={rejected_t}, {_attempt_label(rejected_ok, rejected_trunc)}) ---",
               _indent(rejected_resp),
+              f"  parsed answer: {rejected_ans}",
               "", ""]
     return "\n".join(lines)
 
@@ -281,20 +336,23 @@ def main() -> None:
         sweep_seed = base_seed + idx * 100_000  # distinct generation seeds per example
 
         # --- greedy, once ---
+        print(f"[{prog}] idx={idx} greedy (t=0)...", flush=True)
         r0 = M.generate_samples(mdl, tokenizer, messages, 0.0, 1, device, cfg, sweep_seed)
         sweep_seed += 1
-        t0_correct = sweep.record(task, 0.0, r0[0], gt)
+        text0, trunc0 = r0[0]
+        t0_correct = sweep.record(task, 0.0, text0, trunc0, gt)
 
         mode = None
         chosen_t = rejected_t = None
 
         if t0_correct:
             # EASY: full sweep of nonzero temps to find the worst one.
-            for t in nonzero:
+            for ti, t in enumerate(nonzero, 1):
+                print(f"[{prog}] idx={idx} easy sweep: t={t} ({ti}/{len(nonzero)})", flush=True)
                 resps = M.generate_samples(mdl, tokenizer, messages, t, args.k_easy, device, cfg, sweep_seed)
                 sweep_seed += 1
-                for r in resps:
-                    sweep.record(task, t, r, gt)
+                for text, trunc in resps:
+                    sweep.record(task, t, text, trunc, gt)
 
             ran = [t for t in nonzero if sweep.ran(t)]
             worst_rate = min(sweep.rate(t) for t in ran)
@@ -308,11 +366,13 @@ def main() -> None:
             # HARD: round-robin race. Finish each round, pick chosen at random
             # among that round's winners.
             for _round in range(args.k_hard):
+                print(f"[{prog}] idx={idx} hard race: round {_round + 1}/{args.k_hard}", flush=True)
                 winners = []
                 for t in nonzero:
                     r = M.generate_samples(mdl, tokenizer, messages, t, 1, device, cfg, sweep_seed)
                     sweep_seed += 1
-                    if sweep.record(task, t, r[0], gt):
+                    text, trunc = r[0]
+                    if sweep.record(task, t, text, trunc, gt):
                         winners.append(t)
                 if winners:
                     chosen_t = rng.choice(winners)
@@ -329,7 +389,10 @@ def main() -> None:
             append_jsonl(skipped_path, {
                 "index": idx, "reason": "no_contrast", "question": ex["question"],
                 "ground_truth": str(gt), "temperature_stats": temperature_stats(sweep),
+                "samples": skip_samples(sweep),
             })
+            append_text(readable_path, readable_skip_block(
+                idx, total, ex["question"], gt, "no_contrast", sweep))
             ckpt["total_skipped"] += 1
             ckpt["last_completed_index"] = idx
             save_checkpoint(ckpt_path, ckpt)
@@ -349,8 +412,8 @@ def main() -> None:
             continue
 
         # --- representative responses (rejected = a FAILED attempt) ---
-        chosen_ans, chosen_resp, chosen_ok = sweep.representative(chosen_t, prefer_correct=True)
-        rejected_ans, rejected_resp, rejected_ok = sweep.representative(rejected_t, prefer_correct=False)
+        chosen_ans, chosen_resp, chosen_ok, chosen_trunc = sweep.representative(chosen_t, prefer_correct=True)
+        rejected_ans, rejected_resp, rejected_ok, rejected_trunc = sweep.representative(rejected_t, prefer_correct=False)
 
         append_jsonl(pairs_path, {
             "index": idx,
@@ -362,18 +425,21 @@ def main() -> None:
             "seed": base_seed + idx * 100_000,
             "chosen": {
                 "temperature": chosen_t, "rate": sweep.rate_str(chosen_t),
-                "answer": chosen_ans, "response": chosen_resp, "was_correct": chosen_ok,
+                "answer": chosen_ans, "response": chosen_resp,
+                "was_correct": chosen_ok, "truncated": chosen_trunc,
             },
             "rejected": {
                 "temperature": rejected_t, "rate": sweep.rate_str(rejected_t),
-                "answer": rejected_ans, "response": rejected_resp, "was_correct": rejected_ok,
+                "answer": rejected_ans, "response": rejected_resp,
+                "was_correct": rejected_ok, "truncated": rejected_trunc,
             },
             "temperature_stats": temperature_stats(sweep),
         })
         append_text(readable_path, readable_block(
             idx, total, ex["question"], gt, mode, sweep,
             chosen_t, rejected_t, chosen_ans, rejected_ans,
-            chosen_resp, rejected_resp, chosen_ok, rejected_ok))
+            chosen_resp, rejected_resp, chosen_ok, rejected_ok,
+            chosen_trunc, rejected_trunc))
 
         ckpt["total_pairs"] += 1
         ckpt[mode] = ckpt.get(mode, 0) + 1

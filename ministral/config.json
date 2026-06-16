@@ -6,7 +6,7 @@
   "mlp_hidden_dim": 2048,
   "dropout": 0.1,
   "max_prompt_tokens": 768,
-  "max_new_tokens": 512,
+  "max_new_tokens": 1024,
   "temperature_grid": [0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
   "use_attention_entropy": true,
   "dtype_name": "float16",
