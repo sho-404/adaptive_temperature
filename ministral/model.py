@@ -208,6 +208,10 @@ def load_vllm(cfg: dict):
         dtype=cfg["dtype_name"],
         max_model_len=max_len,
         gpu_memory_utilization=0.90,
+        # Skip torch.compile / CUDA-graph capture. Avoids depending on a full
+        # CUDA toolchain at startup; slightly less optimal decode but batching
+        # dominates throughput. Generation correctness/logic is unaffected.
+        enforce_eager=True,
     )
 
 
