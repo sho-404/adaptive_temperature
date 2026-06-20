@@ -198,20 +198,26 @@ def generate_samples(model, tokenizer, messages, temperature, k, device, cfg, se
 # batched call. Each spec maps 1:1 to one returned (text, truncated), in order.
 
 def load_vllm(cfg: dict):
+    import os
+    # vLLM's optional flashinfer sampler JIT-compiles a CUB kernel that fails to
+    # build against older CUDA toolkits (e.g. 12.0). Fall back to vLLM's native
+    # sampler — a safe default, overridable via the env var.
+    os.environ.setdefault("VLLM_USE_FLASHINFER_SAMPLER", "0")
     from vllm import LLM
 
     source = _resolve_local_or_repo(cfg["model_name_or_path"])
     max_len = int(cfg["max_prompt_tokens"]) + int(cfg["max_new_tokens"])
+    # enforce_eager=True disables torch.compile / CUDA-graph capture. Default is
+    # False -> graphs ON (~3-4x faster decode). Set "vllm_enforce_eager": true in
+    # config.json only on a box without a full CUDA toolchain (no nvcc/headers).
+    # Generation correctness/logic is identical either way.
     return LLM(
         model=source,
         tokenizer_mode="mistral",   # Ministral uses the tekken (mistral_common) tokenizer
         dtype=cfg["dtype_name"],
         max_model_len=max_len,
         gpu_memory_utilization=0.90,
-        # Skip torch.compile / CUDA-graph capture. Avoids depending on a full
-        # CUDA toolchain at startup; slightly less optimal decode but batching
-        # dominates throughput. Generation correctness/logic is unaffected.
-        enforce_eager=True,
+        enforce_eager=bool(cfg.get("vllm_enforce_eager", False)),
     )
 
 
