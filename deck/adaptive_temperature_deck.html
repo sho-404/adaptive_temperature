@@ -1,0 +1,336 @@
+<title>Adaptive Temperature — research deck</title>
+<style>
+  :root{
+    --ground:#0B1022;
+    --panel:#151D33;
+    --panel-2:#1E2942;
+    --text:#E9EDF7;
+    --muted:#8C97B6;
+    --line:rgba(255,255,255,.09);
+    --hot:#FF6A3D;
+    --cool:#4FC3F7;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;}
+  body{
+    background:var(--ground);color:var(--text);font-family:var(--sans);
+    overflow:hidden;-webkit-font-smoothing:antialiased;
+  }
+
+  .deck{position:fixed;inset:0;}
+
+  /* recurring motif: the temperature scale */
+  .heatbar{position:fixed;top:0;left:0;right:0;height:3px;z-index:30;
+    background:linear-gradient(90deg,var(--cool) 0%,#7FA9C9 38%,#C9A07A 60%,var(--hot) 100%);}
+
+  .slide{
+    position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;
+    padding:clamp(28px,6vw,96px);padding-top:clamp(40px,7vw,90px);
+    opacity:0;visibility:hidden;transform:translateY(14px);
+    transition:opacity .5s ease,transform .5s ease,visibility .5s;
+    max-width:1180px;margin:0 auto;width:100%;
+  }
+  .slide.active{opacity:1;visibility:visible;transform:none;}
+
+  .eyebrow{font-family:var(--mono);font-size:13px;letter-spacing:.22em;text-transform:uppercase;
+    color:var(--muted);display:flex;align-items:center;gap:14px;margin-bottom:26px;}
+  .eyebrow .num{color:var(--hot);}
+  .eyebrow .tick{flex:0 0 34px;height:1px;background:var(--line);}
+
+  h1{font-size:clamp(38px,7vw,82px);line-height:.98;margin:0;font-weight:800;letter-spacing:-.02em;}
+  h2{font-size:clamp(28px,4.4vw,52px);line-height:1.03;margin:0 0 22px;font-weight:800;letter-spacing:-.015em;}
+  .lede{font-size:clamp(17px,2vw,22px);line-height:1.5;color:#C4CCE2;max-width:62ch;margin:0;}
+  .lede strong{color:var(--text);font-weight:650;}
+  p.note{color:var(--muted);font-size:15px;line-height:1.5;max-width:60ch;}
+
+  .hot{color:var(--hot);}
+  .cool{color:var(--cool);}
+  .mono{font-family:var(--mono);}
+
+  /* title slide */
+  .title-meta{font-family:var(--mono);font-size:14px;color:var(--muted);line-height:1.9;margin-top:38px;}
+  .title-meta b{color:var(--text);font-weight:600;}
+  .title-sub{font-size:clamp(18px,2.4vw,26px);color:#C4CCE2;margin:24px 0 0;max-width:50ch;line-height:1.4;}
+
+  /* cards */
+  .grid{display:grid;gap:16px;margin-top:30px;}
+  .g3{grid-template-columns:repeat(3,1fr);}
+  .g4{grid-template-columns:repeat(4,1fr);}
+  .g2{grid-template-columns:repeat(2,1fr);}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 20px 22px;}
+  .card .k{font-family:var(--mono);font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--cool);}
+  .card .t{font-size:18px;font-weight:700;margin:10px 0 6px;}
+  .card .d{font-size:14.5px;line-height:1.45;color:var(--muted);}
+
+  /* big stat row */
+  .stats{display:flex;gap:clamp(24px,5vw,72px);flex-wrap:wrap;margin-top:26px;align-items:flex-end;}
+  .stat .v{font-size:clamp(46px,8vw,88px);font-weight:800;line-height:.9;letter-spacing:-.02em;}
+  .stat .l{font-family:var(--mono);font-size:13px;color:var(--muted);margin-top:14px;letter-spacing:.04em;max-width:24ch;line-height:1.4;}
+  .arrow{font-size:clamp(34px,5vw,64px);color:var(--muted);align-self:center;}
+
+  /* table */
+  .tablewrap{overflow-x:auto;margin-top:26px;}
+  table{border-collapse:collapse;font-family:var(--mono);font-size:15px;min-width:520px;}
+  th,td{padding:13px 20px;text-align:right;border-bottom:1px solid var(--line);}
+  th:first-child,td:first-child{text-align:left;color:var(--muted);}
+  thead th{color:var(--muted);font-weight:500;font-size:12.5px;letter-spacing:.08em;text-transform:uppercase;}
+  td.peak{color:var(--hot);font-weight:700;}
+  td.dead{color:var(--muted);}
+
+  /* flow */
+  .flow{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:30px;}
+  .node{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px;flex:1;min-width:150px;}
+  .node .k{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--cool);margin-bottom:7px;}
+  .node .t{font-size:15.5px;line-height:1.35;}
+  .node.judge{border-color:rgba(255,106,61,.55);background:linear-gradient(180deg,rgba(255,106,61,.12),rgba(255,106,61,.03));}
+  .node.judge .k{color:var(--hot);}
+  .flowarrow{color:var(--muted);font-size:22px;flex:0 0 auto;}
+
+  .twocol{display:grid;grid-template-columns:1fr 1fr;gap:clamp(24px,5vw,64px);align-items:center;margin-top:8px;}
+  ul.clean{margin:18px 0 0;padding:0;list-style:none;}
+  ul.clean li{position:relative;padding-left:26px;margin-bottom:14px;font-size:17px;line-height:1.45;color:#C4CCE2;}
+  ul.clean li::before{content:"";position:absolute;left:0;top:9px;width:9px;height:9px;border-radius:50%;
+    background:var(--hot);}
+  ul.clean li.c::before{background:var(--cool);}
+
+  .pill{display:inline-block;font-family:var(--mono);font-size:12px;letter-spacing:.1em;text-transform:uppercase;
+    padding:5px 11px;border:1px solid var(--line);border-radius:999px;color:var(--muted);margin-bottom:22px;}
+
+  /* chrome */
+  .footer{position:fixed;left:0;right:0;bottom:0;height:54px;display:flex;align-items:center;
+    justify-content:space-between;padding:0 clamp(20px,5vw,40px);
+    font-family:var(--mono);font-size:12px;color:var(--muted);letter-spacing:.08em;z-index:20;}
+  .dots{display:flex;gap:9px;}
+  .dot{width:7px;height:7px;border-radius:50%;background:rgba(255,255,255,.18);border:0;padding:0;cursor:pointer;
+    transition:background .25s,transform .25s;}
+  .dot.on{background:var(--hot);transform:scale(1.35);}
+  .nav{position:fixed;bottom:46px;right:clamp(20px,5vw,40px);display:flex;gap:8px;z-index:25;}
+  .nav button{width:40px;height:40px;border-radius:10px;border:1px solid var(--line);background:var(--panel);
+    color:var(--text);font-size:17px;cursor:pointer;transition:background .2s,border-color .2s;}
+  .nav button:hover{background:var(--panel-2);border-color:rgba(255,255,255,.2);}
+  .nav button:focus-visible,.dot:focus-visible{outline:2px solid var(--cool);outline-offset:3px;}
+  .counter b{color:var(--text);}
+
+  @media (max-width:720px){
+    .g3,.g4{grid-template-columns:1fr 1fr;}
+    .twocol{grid-template-columns:1fr;}
+    .arrow{transform:rotate(90deg);}
+  }
+  @media (prefers-reduced-motion:reduce){
+    .slide{transition:opacity .2s;transform:none;}
+  }
+</style>
+
+<div class="heatbar"></div>
+<main class="deck" id="deck">
+
+  <!-- 01 -->
+  <section class="slide active">
+    <div class="eyebrow"><span class="num">01</span><span class="tick"></span><span>Research log</span></div>
+    <h1>Adaptive<br>Temperature</h1>
+    <p class="title-sub">When should a model play it safe, and when should it gamble? Teaching it to decide for itself.</p>
+    <div class="title-meta">
+      <b>Model</b> · Ministral-3-3B-Instruct&nbsp;&nbsp;|&nbsp;&nbsp;<b>Task</b> · GSM8K math&nbsp;&nbsp;|&nbsp;&nbsp;<b>Method</b> · Latent Preference Optimization<br>
+      <b>Inspired by</b> · “Adaptive Decoding via Latent Preference Optimization” (Dhuliawala et&nbsp;al., 2024)
+    </div>
+  </section>
+
+  <!-- 02 -->
+  <section class="slide">
+    <div class="eyebrow"><span class="num">02</span><span class="tick"></span><span>The problem</span></div>
+    <h2>One temperature for everything is a compromise.</h2>
+    <p class="lede">Temperature is the model’s risk dial. <span class="cool">Low</span> is precise but rigid — great for math. <span class="hot">High</span> is inventive but unreliable — great for stories. Today we pick <strong>one fixed value</strong> and live with it on every prompt.</p>
+    <div class="grid g2">
+      <div class="card"><div class="k">Low temperature</div><div class="t cool">Plays it safe</div><div class="d">Accurate, repeatable, but never explores. Best for facts and arithmetic.</div></div>
+      <div class="card"><div class="k">High temperature</div><div class="t hot">Takes risks</div><div class="d">Creative and diverse, but wanders off. Best for open-ended writing.</div></div>
+    </div>
+    <p class="note" style="margin-top:24px;">The question: can the model choose the right setting <em>per problem</em>, instead of us guessing once?</p>
+  </section>
+
+  <!-- 03 -->
+  <section class="slide">
+    <div class="eyebrow"><span class="num">03</span><span class="tick"></span><span>The inspiration</span></div>
+    <h2>The paper’s idea: <span class="hot">learn</span> the temperature.</h2>
+    <p class="lede">Bolt a small network onto a frozen model that predicts the temperature to use — trained from <strong>preference pairs</strong> (this answer beat that one). Two flavors:</p>
+    <div class="grid g2">
+      <div class="card"><div class="k">Sequence-level</div><div class="t">One temperature per answer</div><div class="d">Decide once, up front, before generating. Simple — where we started.</div></div>
+      <div class="card"><div class="k">Token-level</div><div class="t">A new temperature per word</div><div class="d">Switch settings mid-answer — e.g. safe on a constraint, bold on prose.</div></div>
+    </div>
+  </section>
+
+  <!-- 04 -->
+  <section class="slide">
+    <div class="eyebrow"><span class="num">04</span><span class="tick"></span><span>What we built</span></div>
+    <h2>A pipeline, end to end.</h2>
+    <div class="flow">
+      <div class="node"><div class="k">Step 1</div><div class="t"><b>Generate pairs</b><br>4,196 GSM8K problems, sampled across the temperature grid</div></div>
+      <div class="flowarrow">→</div>
+      <div class="node"><div class="k">Step 2</div><div class="t"><b>Extract features</b><br>the model’s internal state for each problem</div></div>
+      <div class="flowarrow">→</div>
+      <div class="node"><div class="k">Step 3</div><div class="t"><b>Train a scorer</b><br>predict which temperature wins</div></div>
+    </div>
+    <div class="stats" style="margin-top:34px;">
+      <div class="stat"><div class="v">4,196</div><div class="l">labeled preference pairs</div></div>
+      <div class="stat"><div class="v">85<span style="font-size:.5em"> / </span>15</div><div class="l">split: easy (greedy wins) vs hard (hotter wins)</div></div>
+      <div class="stat"><div class="v cool">6</div><div class="l">temperatures, 0.0 → 1.0</div></div>
+    </div>
+  </section>
+
+  <!-- 05 -->
+  <section class="slide">
+    <div class="eyebrow"><span class="num">05</span><span class="tick"></span><span>Attempt 1</span></div>
+    <h2>Predict the temperature <span class="cool">from the question</span>.</h2>
+    <p class="lede">Read the model’s internal state <strong>at the prompt</strong> — before it writes anything — and guess the right temperature. We fed the scorer four signals:</p>
+    <div class="grid g4">
+      <div class="card"><div class="k">S1</div><div class="t">Uncertainty</div><div class="d">How unsure it is of its next word.</div></div>
+      <div class="card"><div class="k">S2</div><div class="t">Top-pick margin</div><div class="d">How clear its favorite choice is.</div></div>
+      <div class="card"><div class="k">S3</div><div class="t">Hidden state</div><div class="d">Its full 3,072-number “state of mind.”</div></div>
+      <div class="card"><div class="k">S4</div><div class="t">Attention spread</div><div class="d">How focused vs. scattered it is.</div></div>
+    </div>
+  </section>
+
+  <!-- 06 -->
+  <section class="slide">
+    <div class="eyebrow"><span class="num">06</span><span class="tick"></span><span>The wall</span></div>
+    <h2>It couldn’t beat a dumb rule.</h2>
+    <p class="lede">The data has a quirk: easy problems want <span class="cool">greedy</span>, hard ones want <span class="hot">hotter</span>. So “always pick the lower temperature” already scores <strong>86.7%</strong> using <em>nothing</em>. Our model landed exactly there.</p>
+    <div class="stats">
+      <div class="stat"><div class="v cool">86.7%</div><div class="l">trivial rule — zero features</div></div>
+      <div class="arrow">→</div>
+      <div class="stat"><div class="v">86.7%</div><div class="l">our trained scorer — no better</div></div>
+    </div>
+    <p class="note" style="margin-top:26px;">It quietly collapsed into “always be greedy.” No real learning.</p>
+  </section>
+
+  <!-- 07 -->
+  <section class="slide">
+    <div class="eyebrow"><span class="num">07</span><span class="tick"></span><span>Why it failed</span></div>
+    <h2>The question doesn’t reveal the difficulty.</h2>
+    <p class="lede">We probed directly: can <strong>anything</strong> tell an easy problem from a hard one, just from the prompt? Barely.</p>
+    <div class="stats">
+      <div class="stat"><div class="v cool">0.59</div><div class="l">easy-vs-hard separability from the prompt (0.50 = coin flip)</div></div>
+    </div>
+    <p class="note" style="margin-top:26px;max-width:64ch;">For math, a problem’s difficulty only becomes clear <em>while you solve it</em> — not by looking at the question. We were reading the model at the one moment it had nothing to say.</p>
+  </section>
+
+  <!-- 08 -->
+  <section class="slide">
+    <div class="eyebrow"><span class="num">08</span><span class="tick"></span><span>The pivot</span></div>
+    <h2>Stop reading the question.<br><span class="hot">Read the reasoning.</span></h2>
+    <p class="lede">New idea: don’t guess up front. Let the model actually work the problem, then look at its internal state <strong>after it has reasoned</strong>. Does it know, internally, whether it got the answer right?</p>
+    <p class="note" style="margin-top:22px;">Clean test: a problem’s correct and incorrect attempts share the <em>identical</em> prompt — so prompt features can’t tell them apart. Only the reasoning can.</p>
+  </section>
+
+  <!-- 09 -->
+  <section class="slide">
+    <div class="eyebrow"><span class="num">09</span><span class="tick"></span><span>The finding</span></div>
+    <h2>The model knows when it’s right.</h2>
+    <p class="lede">Predicting correctness from the model’s state <strong>after reasoning</strong> — at a fixed temperature, so it isn’t a trick:</p>
+    <div class="stats">
+      <div class="stat"><div class="v cool">0.50</div><div class="l">from the prompt — knows nothing</div></div>
+      <div class="arrow">→</div>
+      <div class="stat"><div class="v hot">~0.80</div><div class="l">from the finished reasoning — knows a lot</div></div>
+    </div>
+    <p class="note" style="margin-top:26px;">The signal was there all along — just at the end of the work, not the start.</p>
+  </section>
+
+  <!-- 10 -->
+  <section class="slide">
+    <div class="eyebrow"><span class="num">10</span><span class="tick"></span><span>When does it know?</span></div>
+    <h2>Late — not mid-stream.</h2>
+    <p class="lede">How well it predicts its own correctness, measured at points through the reasoning:</p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Through the reasoning</th><th>25%</th><th>50%</th><th>75%</th><th>End</th></tr></thead>
+        <tbody>
+          <tr><td>Knows it’s right? (AUC)</td><td class="dead">~0.55</td><td class="dead">~0.58</td><td>~0.65</td><td class="peak">~0.80</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note" style="margin-top:24px;max-width:64ch;">Mid-solution the signal is weak — too late to rescue <em>that</em> answer by nudging the temperature. The strong signal only lands once the answer is basically written.</p>
+  </section>
+
+  <!-- 11 -->
+  <section class="slide">
+    <div class="eyebrow"><span class="num">11</span><span class="tick"></span><span>The new plan</span></div>
+    <h2>The Judge.</h2>
+    <p class="lede">Don’t pick a temperature up front. Generate a few attempts, then let a learned <span class="hot">Judge</span> keep the best one.</p>
+    <div class="flow">
+      <div class="node"><div class="k">Generate</div><div class="t">A few attempts across temperatures <span class="mono cool">(variety)</span></div></div>
+      <div class="flowarrow">→</div>
+      <div class="node judge"><div class="k">The Judge</div><div class="t">Scores each finished answer: “how likely is this right?”</div></div>
+      <div class="flowarrow">→</div>
+      <div class="node"><div class="k">Keep</div><div class="t">The highest-scored answer <span class="mono hot">✓</span></div></div>
+    </div>
+    <p class="note" style="margin-top:26px;max-width:66ch;">Temperature’s job flips: no longer the thing we predict, just the <em>recipe for variety</em>. The Judge — a yes/no “is this correct?” detector trained on the reasoning state we already extracted — does the deciding.</p>
+  </section>
+
+  <!-- 12 -->
+  <section class="slide">
+    <div class="eyebrow"><span class="num">12</span><span class="tick"></span><span>Where we are</span></div>
+    <h2>What’s done, what’s next.</h2>
+    <div class="twocol">
+      <ul class="clean">
+        <li class="c">Pipeline built — 4,196 pairs, features extracted</li>
+        <li class="c">Per-sequence approach tested → ruled out (0.59)</li>
+        <li class="c">Reasoning features extracted on the A100 (8,392 traces)</li>
+        <li class="c">Confirmed: the model knows its own correctness (~0.80)</li>
+      </ul>
+      <ul class="clean">
+        <li>Train the Judge — local, minutes, data in hand</li>
+        <li>Test: Judge-picks-best vs. any fixed temperature</li>
+        <li>If it wins → confirm on held-out test set</li>
+      </ul>
+    </div>
+    <p class="note" style="margin-top:30px;">The pivot in one line: <strong>not “which temperature?” but “which finished answer?”</strong></p>
+  </section>
+
+</main>
+
+<div class="footer">
+  <span>ADAPTIVE TEMPERATURE</span>
+  <div class="dots" id="dots"></div>
+  <span class="counter"><b id="cur">01</b> / <span id="total">12</span></span>
+</div>
+<div class="nav">
+  <button id="prev" aria-label="Previous slide">←</button>
+  <button id="next" aria-label="Next slide">→</button>
+</div>
+
+<script>
+  (function(){
+    var slides=Array.prototype.slice.call(document.querySelectorAll('.slide'));
+    var i=0, n=slides.length;
+    var dotsWrap=document.getElementById('dots');
+    var curEl=document.getElementById('cur');
+    document.getElementById('total').textContent=String(n).padStart(2,'0');
+    var dots=slides.map(function(_,k){
+      var b=document.createElement('button');
+      b.className='dot'+(k===0?' on':'');b.setAttribute('aria-label','Go to slide '+(k+1));
+      b.addEventListener('click',function(){go(k);});
+      dotsWrap.appendChild(b);return b;
+    });
+    function go(k){
+      i=Math.max(0,Math.min(n-1,k));
+      slides.forEach(function(s,x){s.classList.toggle('active',x===i);});
+      dots.forEach(function(d,x){d.classList.toggle('on',x===i);});
+      curEl.textContent=String(i+1).padStart(2,'0');
+    }
+    function next(){go(i+1);} function prev(){go(i-1);}
+    document.getElementById('next').addEventListener('click',next);
+    document.getElementById('prev').addEventListener('click',prev);
+    document.addEventListener('keydown',function(e){
+      if(e.key==='ArrowRight'||e.key==='PageDown'||e.key===' '){e.preventDefault();next();}
+      else if(e.key==='ArrowLeft'||e.key==='PageUp'){e.preventDefault();prev();}
+      else if(e.key==='Home'){go(0);} else if(e.key==='End'){go(n-1);}
+    });
+    var sx=null;
+    document.addEventListener('touchstart',function(e){sx=e.touches[0].clientX;},{passive:true});
+    document.addEventListener('touchend',function(e){
+      if(sx===null)return;var dx=e.changedTouches[0].clientX-sx;
+      if(Math.abs(dx)>50){dx<0?next():prev();}sx=null;
+    },{passive:true});
+  })();
+</script>
