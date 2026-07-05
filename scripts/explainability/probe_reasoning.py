@@ -25,11 +25,11 @@ from sklearn.pipeline import make_pipeline
 from sklearn.model_selection import cross_val_predict, GroupKFold
 from sklearn.metrics import roc_auc_score, average_precision_score
 
-HERE = Path(__file__).parent
+DATA = Path(__file__).parents[2] / "data"
 LANG = "en"
 
-R = torch.load(HERE / "features" / f"gsm8k_{LANG}_reasoning.pt", map_location="cpu", weights_only=False)
-P = torch.load(HERE / "features" / f"gsm8k_{LANG}.pt", map_location="cpu", weights_only=False)
+R = torch.load(DATA / f"gsm8k_{LANG}_reasoning.pt", map_location="cpu", weights_only=False)
+P = torch.load(DATA / f"gsm8k_{LANG}.pt", map_location="cpu", weights_only=False)
 
 y = R["was_correct"].numpy().astype(int)
 groups = R["index"].numpy()                       # group by prompt

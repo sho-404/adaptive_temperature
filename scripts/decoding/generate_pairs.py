@@ -53,11 +53,13 @@ import json
 import os
 import random
 import time
+import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parents[1]))  # scripts/: model.py, tasks/
 import model as M
 
-HERE = Path(__file__).parent
+DATA = Path(__file__).parents[2] / "data"
 SPLIT = "train"  # preference pairs are built from the train split
 
 K_EASY = 5   # samples per nonzero temperature when greedy already solves it
@@ -291,7 +293,7 @@ def main() -> None:
     nonzero = [t for t in grid if t > 0.0]  # ascending
     base_seed = int(cfg["seed"])
 
-    out_dir = HERE / "datasets"
+    out_dir = DATA
     out_dir.mkdir(parents=True, exist_ok=True)
     pairs_path = out_dir / f"{args.task}_{args.lang}.jsonl"
     ckpt_path = out_dir / f"{args.task}_{args.lang}.checkpoint.json"

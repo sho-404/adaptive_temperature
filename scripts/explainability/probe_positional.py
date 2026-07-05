@@ -14,8 +14,8 @@ from sklearn.pipeline import make_pipeline
 from sklearn.model_selection import cross_val_predict, StratifiedKFold
 from sklearn.metrics import roc_auc_score
 
-HERE = Path(__file__).parent
-R = torch.load(HERE / "features" / "gsm8k_en_reasoning.pt", map_location="cpu", weights_only=False)
+DATA = Path(__file__).parents[2] / "data"
+R = torch.load(DATA / "gsm8k_en_reasoning.pt", map_location="cpu", weights_only=False)
 
 y = R["was_correct"].numpy().astype(int)
 t = R["temperature"].numpy()

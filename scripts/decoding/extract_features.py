@@ -33,13 +33,16 @@ import json
 import time
 from pathlib import Path
 
+import sys
+
 import torch
 import torch.nn.functional as F
 
+sys.path.insert(0, str(Path(__file__).parents[1]))  # scripts/: model.py, tasks/
 from model import load_config, get_device, get_dtype, load_model, encode
 import tasks.gsm8k as gsm8k
 
-HERE = Path(__file__).parent
+DATA = Path(__file__).parents[2] / "data"
 LOGIT_K = 5  # S2: gap between the 1st- and k-th-ranked logit
 
 
@@ -55,7 +58,7 @@ def load_prompts(lang: str, split: str) -> list[dict]:
     test  -> the held-out split via the task loader (same path eval_fixed uses).
     """
     if split == "train":
-        path = HERE / "datasets" / f"gsm8k_{lang}.jsonl"
+        path = DATA / f"gsm8k_{lang}.jsonl"
         if not path.exists():
             raise FileNotFoundError(f"Pairs file not found: {path}")
         by_index: dict[int, str] = {}
@@ -242,7 +245,7 @@ def main() -> None:
         },
     }
 
-    out_dir = HERE / "features"
+    out_dir = DATA
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"gsm8k_{args.lang}.pt"
     tmp = out_path.with_suffix(".pt.tmp")

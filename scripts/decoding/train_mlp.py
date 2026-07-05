@@ -43,7 +43,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-HERE = Path(__file__).parent
+DATA = Path(__file__).parents[2] / "data"
 
 
 # ============================================================
@@ -51,7 +51,7 @@ HERE = Path(__file__).parent
 # ============================================================
 
 def load_pairs(lang: str) -> list[dict]:
-    path = HERE / "datasets" / f"gsm8k_{lang}.jsonl"
+    path = DATA / f"gsm8k_{lang}.jsonl"
     rows = []
     with path.open(encoding="utf-8") as f:
         for line in f:
@@ -67,7 +67,7 @@ def build_dataset(lang: str, use: dict) -> dict:
     Returns per-pair tensors: feat [N,D], tau_c [N], tau_r [N], is_hard [N],
     plus the standardisation stats and the temperature grid.
     """
-    feats = torch.load(HERE / "features" / f"gsm8k_{lang}.pt", map_location="cpu", weights_only=False)
+    feats = torch.load(DATA / f"gsm8k_{lang}.pt", map_location="cpu", weights_only=False)
     idx_to_row = {int(i): k for k, i in enumerate(feats["index"].tolist())}
 
     pairs = load_pairs(lang)
@@ -284,7 +284,7 @@ def main() -> None:
     print("-" * 64)
 
     if args.save:
-        ckpt_dir = HERE / "checkpoints"
+        ckpt_dir = DATA / "checkpoints"
         ckpt_dir.mkdir(exist_ok=True)
         torch.save({"state_dict": model.state_dict(), "mu": mu, "sd": sd,
                     "grid": grid, "use": use, "args": vars(args)},

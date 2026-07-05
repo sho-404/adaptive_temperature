@@ -33,16 +33,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 
 import torch
 
+sys.path.insert(0, str(Path(__file__).parents[1]))  # scripts/: model.py, tasks/
+sys.path.insert(0, str(Path(__file__).parents[1] / "decoding"))  # extract_features.template_hash
 from model import load_config, get_device, get_dtype, load_model
 import tasks.gsm8k as gsm8k
 from extract_features import template_hash
 
-HERE = Path(__file__).parent
+DATA = Path(__file__).parents[2] / "data"
 FRACS = [0.25, 0.5, 0.75, 1.0]  # positional taps along the reasoning (1.0 = end)
 
 
@@ -51,7 +54,7 @@ FRACS = [0.25, 0.5, 0.75, 1.0]  # positional taps along the reasoning (1.0 = end
 # ============================================================
 
 def load_pairs(lang: str) -> list[dict]:
-    path = HERE / "datasets" / f"gsm8k_{lang}.jsonl"
+    path = DATA / f"gsm8k_{lang}.jsonl"
     if not path.exists():
         raise FileNotFoundError(f"Pairs file not found: {path}")
     rows = []
@@ -237,7 +240,7 @@ def main() -> None:
             "note": "teacher-forced over stored chosen/rejected responses; label=was_correct",
         },
     }
-    out_dir = HERE / "features"
+    out_dir = DATA
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"gsm8k_{args.lang}_reasoning.pt"
     tmp = out_path.with_suffix(".pt.tmp")
