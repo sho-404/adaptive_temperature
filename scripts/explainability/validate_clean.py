@@ -179,8 +179,24 @@ def stage_eval() -> None:
     import numpy as np
     from sklearn.linear_model import LogisticRegression
     from sklearn.metrics import roc_auc_score
+    from sklearn.model_selection import GroupKFold
     from sklearn.pipeline import make_pipeline
     from sklearn.preprocessing import StandardScaler
+
+    def arrow_cv(X, y, g):
+        a = []
+        for tr, te in GroupKFold(5).split(X, y, g):
+            w_ = X[tr][y[tr] == 1].mean(0) - X[tr][y[tr] == 0].mean(0)
+            a.append(roc_auc_score(y[te], X[te] @ w_))
+        return float(np.mean(a))
+
+    def probe_cv(X, y, g):
+        clf_ = make_pipeline(StandardScaler(), LogisticRegression(max_iter=3000, class_weight="balanced"))
+        a = []
+        for tr, te in GroupKFold(5).split(X, y, g):
+            clf_.fit(X[tr], y[tr])
+            a.append(roc_auc_score(y[te], clf_.predict_proba(X[te])[:, 1]))
+        return float(np.mean(a))
 
     P = torch.load(DATA / "gsm8k_en_reasoning.pt", map_location="cpu", weights_only=False)  # pair (train)
     C = torch.load(OUT_PT, map_location="cpu", weights_only=False)                          # clean (test)
@@ -193,9 +209,10 @@ def stage_eval() -> None:
     Hp = P["hidden_frac"].numpy()
     yc, tc = C["was_correct"].numpy().astype(int), C["temperature"].numpy()
     Hc = C["hidden_frac"].numpy()
+    gc = C["index"].numpy()
     keep = ~C["truncated"].numpy()
     print(f"Clean rows: {len(yc)}  (dropping {int((~keep).sum())} truncated)")
-    yc, tc, Hc = yc[keep], tc[keep], Hc[keep]
+    yc, tc, Hc, gc = yc[keep], tc[keep], Hc[keep], gc[keep]
 
     results: dict = {"fracs": fracs, "bands": {}}
     for tv in sorted(set(tc.tolist())):
@@ -221,11 +238,24 @@ def stage_eval() -> None:
         for fi, fv in enumerate(fracs):  # end-arrow applied to earlier clean positions
             band["positions"][f"{fv:.2f}"] = float(roc_auc_score(y_te, Hc[mc, fi, :] @ w))
 
+        # refit WITHIN the clean band (CV): the clean-data signal ceiling, to
+        # separate "signal is weaker on clean data" from "transfer gap".
+        Xc, y_, g_ = Hc[mc], y_te, gc[mc]
+        band["refit"] = {
+            "arrow_auc": arrow_cv(Xc[:, F_END, :], y_, g_),
+            "probe_auc": probe_cv(Xc[:, F_END, :], y_, g_),
+            "positions": {f"{fv:.2f}": arrow_cv(Xc[:, fi, :], y_, g_)
+                          for fi, fv in enumerate(fracs)},
+        }
+
         results["bands"][f"{tv:.1f}"] = band
         pos = "  ".join(f"{int(fv*100)}%={band['positions'][f'{fv:.2f}']:.3f}" for fv in fracs)
+        rpos = "  ".join(f"{int(fv*100)}%={band['refit']['positions'][f'{fv:.2f}']:.3f}" for fv in fracs)
         print(f"tau={tv:.1f}  n_test={band['n_test']}  base_rate={band['test_base_rate']:.2f}")
         print(f"  FROZEN end-of-reasoning: arrow AUC={band['arrow_auc']:.3f}  probe AUC={band['probe_auc']:.3f}")
         print(f"  end-arrow by position  : {pos}")
+        print(f"  REFIT (clean ceiling)  : arrow={band['refit']['arrow_auc']:.3f}  probe={band['refit']['probe_auc']:.3f}")
+        print(f"  refit arrow by position: {rpos}")
 
     OUT_JSON.parent.mkdir(exist_ok=True)
     OUT_JSON.write_text(json.dumps(results, indent=2))
