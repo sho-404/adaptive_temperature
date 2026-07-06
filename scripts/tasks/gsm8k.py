@@ -81,14 +81,16 @@ def load(lang: str = "en", split: str = "test") -> list[dict]:
 
 _RULES = """Solve the following grade-school math problem step by step. Take as much room as you need to reason.
 
-Your answer is ONLY accepted if its VERY LAST line is exactly:
+Write your response in this order:
+1. FIRST, your step-by-step reasoning. Your response must START with the reasoning — never with ####.
+2. THEN, only after the reasoning is complete, the VERY LAST line, exactly:
 #### N
 where N is the final numeric answer and nothing else: digits only, no words, no units, no symbols, no extra text.
 For example, if the final answer is 42, the last line must be exactly:
 #### 42
 
 Strict rules:
-1. Use #### ONLY on that final line. Never write #### anywhere else in your response.
+1. Use #### ONLY on that final line, after your reasoning. Never write #### anywhere else in your response, and never at the start.
 2. Write nothing at all after that final #### line.
 3. If the answer is not in this exact form, it is marked WRONG even if the reasoning is correct. We do not search the rest of the text for a number.
 
@@ -98,9 +100,10 @@ Problem:
 
 def build_messages(question: str) -> list[dict[str, str]]:
     system = (
-        "You are a careful grade-school math solver. You always finish with the "
-        "final answer on its own last line as '#### N' (a single number, digits "
-        "only, no units), and you never write #### anywhere else in the response."
+        "You are a careful grade-school math solver. You always reason step by "
+        "step first, and only then finish with the final answer on its own last "
+        "line as '#### N' (a single number, digits only, no units). You never "
+        "write #### anywhere else in the response, and never start with it."
     )
     return [
         {"role": "system", "content": system},
@@ -187,9 +190,11 @@ def extract_answer(response: str) -> tuple[Decimal | None, str]:
     ]
 
     for pattern in marker_patterns:
-        matches = re.findall(pattern, response)
-        if matches:
-            value = parse_marker_value(matches[-1])
+        # Last PARSEABLE match wins: some models parrot the literal '#### N'
+        # format example after their real answer line, and a plain matches[-1]
+        # would let that junk line mask the genuine answer above it.
+        for m in reversed(re.findall(pattern, response)):
+            value = parse_marker_value(m)
             if value is not None:
                 return value, "explicit_marker"
 
