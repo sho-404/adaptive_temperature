@@ -367,7 +367,7 @@ def stage_extract(model_key: str, split: str, limit: int | None,
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", required=True, choices=["ministral", "qwen", "llama"])
+    ap.add_argument("--model", required=True, choices=["ministral", "qwen", "llama", "phi"])
     ap.add_argument("--stage", required=True, choices=["generate", "extract"])
     ap.add_argument("--split", required=True, choices=["train", "test"])
     ap.add_argument("--limit", type=int, default=None, help="cap prompts (generate) / rows (extract)")

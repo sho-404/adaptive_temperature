@@ -161,7 +161,7 @@ class Split:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", required=True, choices=["ministral", "qwen", "llama"])
+    ap.add_argument("--model", required=True, choices=["ministral", "qwen", "llama", "phi"])
     ap.add_argument("--bootstrap", type=int, default=1000)
     args = ap.parse_args()
 
