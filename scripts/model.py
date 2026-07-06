@@ -1,9 +1,16 @@
-"""Model backend for THIS container (Ministral / Mistral3), shared by the
-drivers (eval_fixed.py, generate_pairs.py).
+"""Model backend shared by the drivers (generate_pairs.py, collect.py, ...).
 
-This is the only file that knows how to load and run the model. When you copy
-this container for another model, this is the part you swap; the drivers and
-the task modules stay the same.
+This is the only file that knows how to load and run a model. Two backends:
+
+  "mistral" — Ministral/Mistral3 (MistralCommonBackend tokenizer). The original
+              container; the pair-era scripts use it unchanged.
+  "auto"    — any standard HF causal LM (AutoTokenizer/AutoModelForCausalLM).
+              Used for the cross-model replication (Qwen2.5-3B, Llama-3.2-3B).
+
+Select a model with load_config(model="qwen"|"llama"|"ministral"): the entry
+from config.json's "models" registry is merged over the base config. Calling
+load_config() with no argument keeps the original Ministral behaviour, so the
+pair-era scripts are byte-identical in what they load and encode.
 """
 
 from __future__ import annotations
@@ -38,8 +45,21 @@ for _h in _hf_root.handlers:        # child loggers propagate to these handlers
 # Config / device / dtype
 # ============================================================
 
-def load_config() -> dict:
-    return json.loads((HERE / "config.json").read_text(encoding="utf-8"))
+def load_config(model: str | None = None) -> dict:
+    """Load config.json, optionally merged with a "models" registry entry.
+
+    load_config()        -> base config (Ministral), exactly as before.
+    load_config("qwen")  -> base config with the qwen entry's keys on top,
+                            plus cfg["model_key"] = "qwen".
+    """
+    cfg = json.loads((HERE / "config.json").read_text(encoding="utf-8"))
+    key = model or cfg.get("default_model", "ministral")
+    registry = cfg.get("models", {})
+    if model is not None and model not in registry:
+        raise KeyError(f"unknown model {model!r}; registry has {sorted(registry)}")
+    cfg.update(registry.get(key, {}))
+    cfg["model_key"] = key
+    return cfg
 
 
 def get_dtype(name: str) -> torch.dtype:
@@ -106,6 +126,18 @@ def _resolve_local_or_repo(name_or_path: str) -> str:
 
 def load_model(cfg: dict, device: torch.device, dtype: torch.dtype):
     source = _resolve_local_or_repo(cfg["model_name_or_path"])
+
+    if cfg.get("backend", "mistral") == "auto":
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+
+        tokenizer = AutoTokenizer.from_pretrained(source)
+        model = AutoModelForCausalLM.from_pretrained(
+            source, dtype=dtype, low_cpu_mem_usage=True
+        )
+        model.to(device)
+        model.eval()
+        return tokenizer, model
+
     tokenizer = MistralCommonBackend.from_pretrained(source)
 
     kwargs = dict(dtype=dtype, trust_remote_code=True, low_cpu_mem_usage=True)
@@ -121,6 +153,36 @@ def load_model(cfg: dict, device: torch.device, dtype: torch.dtype):
     model.to(device)
     model.eval()
     return tokenizer, model
+
+
+def model_dims(model) -> tuple[int, int]:
+    """(hidden_size, num_hidden_layers), robust to composite configs.
+
+    Mistral3ForConditionalGeneration nests the text model's sizes under
+    config.text_config; plain causal LMs (Qwen, Llama) keep them at the top.
+    """
+    conf = getattr(model.config, "text_config", model.config)
+    return int(conf.hidden_size), int(conf.num_hidden_layers)
+
+
+def apply_template(tokenizer, messages, cfg: dict, *,
+                   add_generation_prompt: bool = False,
+                   continue_final_message: bool = False) -> torch.Tensor:
+    """Chat-template encode -> input_ids [1, seq], backend-aware.
+
+    The mistral backend's tokenizer always emits a generation-ready encoding
+    for a prompt (…[/INST]) and does not take add_generation_prompt, so the
+    flag is only forwarded on the auto backend. continue_final_message works
+    on both: the final assistant message is encoded as an unfinished turn
+    (no end-of-turn token), so the last token is the end of the reasoning.
+    """
+    kw: dict = {}
+    if continue_final_message:
+        kw["continue_final_message"] = True
+    elif cfg.get("backend", "mistral") == "auto":
+        kw["add_generation_prompt"] = add_generation_prompt
+    out = tokenizer.apply_chat_template(messages, return_tensors="pt", return_dict=True, **kw)
+    return out["input_ids"]
 
 
 def encode(tokenizer, messages, device, max_tokens):
@@ -211,9 +273,11 @@ def load_vllm(cfg: dict):
     # False -> graphs ON (~3-4x faster decode). Set "vllm_enforce_eager": true in
     # config.json only on a box without a full CUDA toolchain (no nvcc/headers).
     # Generation correctness/logic is identical either way.
+    # Ministral needs the tekken (mistral_common) tokenizer; Qwen/Llama use the default.
+    tok_mode = "mistral" if cfg.get("backend", "mistral") == "mistral" else "auto"
     return LLM(
         model=source,
-        tokenizer_mode="mistral",   # Ministral uses the tekken (mistral_common) tokenizer
+        tokenizer_mode=tok_mode,
         dtype=cfg["dtype_name"],
         max_model_len=max_len,
         gpu_memory_utilization=0.90,

@@ -2,6 +2,25 @@
   "model_name_or_path": "mistralai/Ministral-3-3B-Instruct-2512-BF16",
   "ollama_model": "ministral-3:3b-instruct-2512-fp16",
   "hidden_size": 3072,
+  "backend": "mistral",
+  "default_model": "ministral",
+  "models": {
+    "ministral": {
+      "model_name_or_path": "mistralai/Ministral-3-3B-Instruct-2512-BF16",
+      "hidden_size": 3072,
+      "backend": "mistral"
+    },
+    "qwen": {
+      "model_name_or_path": "Qwen/Qwen2.5-3B-Instruct",
+      "hidden_size": 2048,
+      "backend": "auto"
+    },
+    "llama": {
+      "model_name_or_path": "meta-llama/Llama-3.2-3B-Instruct",
+      "hidden_size": 3072,
+      "backend": "auto"
+    }
+  },
   "input_dim": 3078,
   "mlp_hidden_dim": 2048,
   "dropout": 0.1,
