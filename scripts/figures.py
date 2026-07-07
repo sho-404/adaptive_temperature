@@ -160,7 +160,7 @@ def fig_geometry():
         despine(ax)
     axes[0].set_ylabel("top orthogonal PC")
     axes[0].legend(loc="upper left", frameon=False, handletextpad=0.2)
-    fig.suptitle("Ministral-3-3B — one frozen direction separates all temperature bands",
+    fig.suptitle("Ministral-3-3B: one frozen direction separates all temperature bands",
                  fontsize=9, y=1.02)
     save(fig, "fig_geometry")
 
