@@ -361,3 +361,218 @@ if __name__ == "__main__":
     fig_layers()
     fig_robustness()
     fig_axes_cos()
+
+
+# ================================================================ v2 figures
+def _ministral_directions():
+    """The four unit directions (end arrows per band + pre-answer arrow),
+    fitted on the train split exactly as analyze.py fits them."""
+    tr = torch.load(ROOT / "data/gsm8k_en_clean.ministral.train.pt",
+                    map_location="cpu", weights_only=False)
+    keep = (~tr["truncated"]).numpy()
+    mk = tr["has_marker"].numpy()[keep]
+    y = tr["was_correct"].numpy()[keep]
+    t = tr["temperature"].numpy()[keep]
+    Xe = tr["hidden_frac"][:, -1, :].float().numpy()[keep]
+    Xp = tr["hidden_pre"].float().numpy()[keep]
+
+    def unit(v):
+        return v / np.linalg.norm(v)
+
+    ends = {b: unit(Xe[(m := np.isclose(t, b)) & y].mean(0)
+                    - Xe[m & ~y].mean(0)) for b in (0.0, 0.6, 1.0)}
+    pre = unit(Xp[mk & y].mean(0) - Xp[mk & ~y].mean(0))
+    return ends, pre, (Xe, y, t)
+
+
+def fig_axes3d():
+    """Hero geometry figure: the four directions drawn as vectors in the
+    3-D subspace they (almost exactly) span; same scene from three angles.
+    Angles between the drawn vectors are the TRUE high-dim cosines."""
+    ends, pre, _ = _ministral_directions()
+    V = np.stack([ends[0.0], ends[0.6], ends[1.0], pre])
+    # Gram-Schmidt basis: e1 = bundle mean (blues lie along +x), e2 = the
+    # part of the pre-arrow orthogonal to it (red opens into +y), e3 = rest.
+    e1 = V[:3].mean(0); e1 /= np.linalg.norm(e1)
+    e2 = pre - (pre @ e1) * e1; e2 /= np.linalg.norm(e2)
+    r = V[2] - (V[2] @ e1) * e1 - (V[2] @ e2) * e2
+    e3 = r / np.linalg.norm(r)
+    P = V @ np.stack([e1, e2, e3]).T      # exact up to <0.2% norm loss
+    labels = ["end arrow, $\\tau{=}0$", "end arrow, $\\tau{=}0.6$",
+              "end arrow, $\\tau{=}1$", "pre-answer arrow"]
+    colors = [TEMP_C["0.0"], TEMP_C["0.6"], TEMP_C["1.0"], CRIT]
+
+    fig = plt.figure(figsize=(PAGE_W, 2.75))
+    for k, azim in enumerate((15, 50, 85)):
+        ax = fig.add_subplot(1, 3, k + 1, projection="3d")
+        for v, c, lab in zip(P, colors, labels):
+            ax.quiver(0, 0, 0, *v, color=c, lw=2.2, arrow_length_ratio=0.09,
+                      label=lab if k == 0 else None)
+        ax.scatter([0], [0], [0], color=INK, s=8)
+        # equal ranges on all three axes so angles are not distorted
+        ax.set_xlim(-0.25, 1.05); ax.set_ylim(-0.25, 1.05); ax.set_zlim(-0.65, 0.65)
+        ax.view_init(elev=18, azim=azim)
+        ax.set_proj_type("ortho")         # faithful angles, no perspective
+        ax.set_title(f"view {k+1} (rotated {35*k}$^\\circ$)", fontsize=8)
+        ax.set_box_aspect((1, 1, 1))
+        for pane in (ax.xaxis, ax.yaxis, ax.zaxis):
+            pane.set_ticklabels([])
+            pane.pane.set_alpha(0.05)
+            pane.line.set_color(BASE)
+        ax.grid(False)
+    fig.legend(loc="lower center", ncol=4, frameon=False, fontsize=7.5,
+               bbox_to_anchor=(0.5, -0.04))
+    fig.suptitle("The three temperature arrows are one axis; the pre-answer "
+                 "arrow is another (cosines 0.96--0.99 vs. 0.19)",
+                 fontsize=8.5, y=0.99)
+    save(fig, "fig_axes3d")
+
+
+def fig_ridges():
+    """Score densities under the ONE frozen tau=0 arrow, per band: the same
+    ruler separates correct from incorrect at every temperature."""
+    ends, _, (Xe_tr, y_tr, t_tr) = _ministral_directions()
+    w = ends[0.0]
+    te = torch.load(ROOT / "data/gsm8k_en_clean.ministral.test.pt",
+                    map_location="cpu", weights_only=False)
+    keep = (~te["truncated"]).numpy()
+    y = te["was_correct"].numpy()[keep]
+    t = te["temperature"].numpy()[keep]
+    X = te["hidden_frac"][:, -1, :].float().numpy()[keep]
+    mu = Xe_tr.mean(0)
+    s = (X - mu) @ w
+    m0 = np.isclose(t, 0.0)
+    thr = 0.5 * (s[m0 & y].mean() + s[m0 & ~y].mean())   # one threshold, from tau=0
+
+    from scipy.stats import gaussian_kde
+    fig, axes = plt.subplots(3, 1, figsize=(COL_W, 3.0), sharex=True)
+    lo, hi = np.percentile(s, 1), np.percentile(s, 99.9)
+    xs = np.linspace(lo, hi, 400)
+    for ax, b in zip(axes, BANDS):
+        m = np.isclose(t, float(b))
+        auc = roc_auc_score(y[m], s[m])
+        for cls, col, lab in [(True, GOOD, "correct"), (False, CRIT, "incorrect")]:
+            v = s[m & (y == cls)]
+            d = gaussian_kde(v)(xs)
+            d = d / d.max()               # per-curve scaling: shapes comparable
+            ax.fill_between(xs, d, color=col, alpha=0.35, lw=0)
+            ax.plot(xs, d, color=col, lw=1.2,
+                    label=lab if b == "0.0" else None)
+        ax.axvline(thr, color=INK, lw=0.9, ls="--")
+        ax.text(0.02, 0.80, f"$\\tau={b}$   AUC {auc:.2f}",
+                transform=ax.transAxes, fontsize=7.5, color=INK)
+        ax.set_yticks([])
+        ax.set_ylim(0, 1.12)
+        despine(ax)
+        ax.spines["left"].set_visible(False)
+    axes[0].legend(frameon=False, fontsize=7, loc="upper right",
+                   bbox_to_anchor=(1.0, 1.32))
+    axes[2].set_xlabel("score under the frozen $\\tau{=}0$ arrow")
+    axes[0].set_title("one threshold (dashed), fitted on greedy chains only",
+                      fontsize=8, pad=16)
+    save(fig, "fig_ridges")
+
+
+def fig_arrow_concept():
+    """Didactic mini-diagram: what the arrow is."""
+    rng = np.random.default_rng(3)
+    good = rng.normal([2.2, 0.4], 0.55, (110, 2))
+    bad = rng.normal([0.0, -0.3], 0.62, (55, 2))
+    mu_g, mu_b = good.mean(0), bad.mean(0)
+    fig, ax = plt.subplots(figsize=(COL_W, 1.9))
+    ax.scatter(*good.T, s=7, c=GOOD, alpha=0.4, marker="o")
+    ax.scatter(*bad.T, s=10, c=CRIT, alpha=0.6, marker="x", linewidths=0.8)
+    for mu, c in ((mu_g, GOOD), (mu_b, CRIT)):
+        ax.scatter(*mu, s=90, c=c, edgecolors="white", linewidths=1.2, zorder=5)
+    ax.annotate("", xy=mu_g, xytext=mu_b,
+                arrowprops=dict(arrowstyle="-|>", lw=2.2, color=INK), zorder=4)
+    mid = (mu_g + mu_b) / 2
+    ax.text(mid[0] - 1.15, mid[1] + 0.8,
+            "$\\mathbf{w}=\\mu_+ - \\mu_-$", fontsize=9, color=INK)
+    ax.text(mu_g[0] + 1.0, mu_g[1] - 0.85, "mean of\ncorrect states",
+            fontsize=6.5, color=INK, ha="center")
+    ax.text(mu_b[0] - 0.55, mu_b[1] - 1.25, "mean of\nincorrect states",
+            fontsize=6.5, color=INK, ha="center")
+    ax.set_xlim(-2.6, 4.6)
+    ax.set_ylim(-2.6, 2.6)
+    d = (mu_g - mu_b) / np.linalg.norm(mu_g - mu_b)
+    n = np.array([-d[1], d[0]])
+    ax.plot(*np.array([mid - 2.0 * n, mid + 2.0 * n]).T,
+            ls="--", lw=1.0, color=MUTED)
+    ax.text(*(mid + 1.45 * n + [0.1, 0.06]), "decision\nboundary", fontsize=6.5,
+            color=MUTED)
+    ax.set_xticks([]); ax.set_yticks([]); ax.grid(False)
+    ax.set_aspect("equal")
+    for sp in ax.spines.values():
+        sp.set_visible(False)
+    save(fig, "fig_arrow_concept")
+
+
+def fig_flowmap():
+    """Whole-study map: data -> generation -> grading -> extraction ->
+    tensors -> every analysis, each pointing to its figure/table."""
+    from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
+
+    def box(ax, x, y, w, h, title, body, ec="#2a78d6", fc="#eaf2fc",
+            tfs=6.8, bfs=5.4):
+        ax.add_patch(FancyBboxPatch((x, y), w, h,
+                     boxstyle="round,pad=0.012,rounding_size=0.025",
+                     fc=fc, ec=ec, lw=1.1, zorder=2))
+        ax.text(x + w / 2, y + h - 0.058, title, ha="center", va="top",
+                fontsize=tfs, fontweight="bold", color=INK, zorder=3)
+        if body:
+            ax.text(x + w / 2, y + 0.022, body, ha="center", va="bottom",
+                    fontsize=bfs, color=INK, zorder=3, linespacing=1.35)
+
+    def arrow(ax, p, q, rad=0.0):
+        ax.add_patch(FancyArrowPatch(p, q, arrowstyle="-|>", mutation_scale=9,
+                     color=MUTED, lw=1.0, zorder=1,
+                     connectionstyle=f"arc3,rad={rad}"))
+
+    fig, ax = plt.subplots(figsize=(PAGE_W, 4.3))
+    ax.set_xlim(0, 10); ax.set_ylim(0, 6); ax.axis("off"); ax.grid(False)
+
+    # ---- tier 1: data & generation
+    box(ax, 0.15, 4.55, 1.7, 1.15, "GSM8K",
+        "7,473 train problems\n1,319 test problems")
+    box(ax, 2.45, 4.55, 2.6, 1.15, "1. Generate  (vLLM)",
+        "3 models $\\times$ 5 chains/problem\n(1 greedy, 2@$\\tau$0.6, 2@$\\tau$1.0)\n$\\approx$44k chains per model\ncollect.py --stage generate")
+    box(ax, 5.65, 4.55, 1.95, 1.15, "2. Grade",
+        "last '####' answer,\nexact match; drop\ntruncated chains")
+    box(ax, 8.2, 4.55, 1.65, 1.15, "labels",
+        "correct /\nincorrect", ec="#104281", fc="white")
+    arrow(ax, (1.85, 5.12), (2.45, 5.12))
+    arrow(ax, (5.05, 5.12), (5.65, 5.12))
+    arrow(ax, (7.6, 5.12), (8.2, 5.12))
+
+    # ---- tier 2: feature extraction
+    box(ax, 1.3, 2.55, 4.4, 1.3, "3. Teacher-force & tap",
+        "collect.py --stage extract:\n"
+        "replay each chain through its own model, record residual stream at\n"
+        "25 / 50 / 75 / 90 / 95 / 100% of the reasoning + pre-answer token\n"
+        "+ 8 layers + per-token log-probs")
+    box(ax, 6.55, 2.55, 3.3, 1.3, "feature tensors  (.pt)",
+        "one row per graded chain:\nhidden states at every tap,\nlabel, temperature, length,\nlog-prob summaries", ec="#104281", fc="white")
+    arrow(ax, (3.6, 4.55), (3.55, 3.85))
+    arrow(ax, (8.95, 4.55), (8.6, 3.85))
+    arrow(ax, (5.7, 3.2), (6.55, 3.2))
+
+    # ---- tier 3: analyses, fed from the tensors via a horizontal bus
+    Ys = 0.25
+    analyses = [
+        (0.15, "analyze.py", "arrow + probe AUCs,\npositional curve,\n3$\\times$3 temp transfer,\nlayers, baselines", "Tab. II, Figs. 3--5, 10"),
+        (2.15, "geometry & CIs", "band-arrow cosines,\npre vs. end axis,\nbootstrap CIs", "Figs. 6--7"),
+        (4.15, "within_prompt.py", "same-question\ncorrect-vs-incorrect\npairs", "Fig. 9"),
+        (6.15, "verifier.py", "best-of-5 voting,\nrisk--coverage", "Tab. III, Fig. 11"),
+        (8.15, "legacy pair data", "frozen readouts under\ndistribution shift", "Fig. 8"),
+    ]
+    bus_y = 2.25
+    ax.plot([8.2, 8.2], [2.55, bus_y], color=MUTED, lw=1.0, zorder=1)
+    ax.plot([0.15 + 0.9, 8.15 + 0.9], [bus_y, bus_y], color=MUTED, lw=1.0,
+            zorder=1)
+    for x, title, body, out in analyses:
+        box(ax, x, Ys + 0.55, 1.8, 1.35, title, body, tfs=6.2, bfs=5.2)
+        ax.text(x + 0.9, Ys + 0.28, "$\\rightarrow$ " + out, ha="center",
+                fontsize=5.6, color="#104281", fontweight="bold")
+        arrow(ax, (x + 0.9, bus_y), (x + 0.9, Ys + 1.95))
+    save(fig, "fig_flowmap")
