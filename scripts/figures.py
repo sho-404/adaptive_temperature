@@ -60,6 +60,56 @@ def despine(ax):
         ax.spines[s].set_visible(False)
 
 
+# ---------------------------------------------------------------- pipeline
+def fig_pipeline():
+    """Five-stage process diagram (drawn here instead of TikZ: the IEEE
+    Access class's spot-color setup breaks if pgf is loaded)."""
+    from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
+
+    stages = [
+        ("Generate", "GSM8K train+test;\nper prompt: 1 greedy\n+ 2@$\\tau$0.6 + 2@$\\tau$1.0\n$\\approx$44k chains/model"),
+        ("Grade", "parse final '####';\nexact match $\\Rightarrow$\ncorrect / incorrect;\ndrop truncated"),
+        ("Teacher-force\n& tap", "re-forward own chain;\nresidual stream at\n25–100%, pre-answer\ntoken, 8 layers; log-probs"),
+        ("Fit on train", "arrow $\\mathbf{w}=\\mu_+ - \\mu_-$\nand logistic probe,\nper temperature band"),
+        ("Evaluate\non test", "AUC + bootstrap CIs;\n3$\\times$3 temp transfer;\nwithin-prompt pairs;\ncosines; selective pred."),
+    ]
+    notes = [
+        (1.5, "every chain is regraded from its own text;\nlabels are never taken from the sampler"),
+        (3.5, "fit and evaluation splits share no prompts;\nrepeated for Ministral-3-3B, Qwen2.5-3B, Llama-3.2-3B"),
+    ]
+    fig, ax = plt.subplots(figsize=(PAGE_W, 2.15))
+    ax.set_xlim(-0.55, 4.55)
+    ax.set_ylim(-0.62, 0.62)
+    ax.axis("off")
+    ax.grid(False)
+    for i, (title, body) in enumerate(stages):
+        last = i == len(stages) - 1
+        ax.add_patch(FancyBboxPatch(
+            (i - 0.44, -0.40), 0.88, 0.80,
+            boxstyle="round,pad=0.015,rounding_size=0.03",
+            fc="white" if last else "#eaf2fc",
+            ec="#104281" if last else "#2a78d6", lw=1.2, zorder=2))
+        ax.text(i, 0.28 if "\n" not in title else 0.245, title,
+                ha="center", va="center",
+                fontsize=6.9, fontweight="bold", color=INK, zorder=3,
+                linespacing=1.15)
+        ax.text(i, -0.12, body, ha="center", va="center",
+                fontsize=5.5, color=INK, zorder=3, linespacing=1.4)
+        ax.text(i - 0.44, 0.46, f" {i + 1} ", ha="left", va="center",
+                fontsize=6.5, fontweight="bold", color="white",
+                bbox=dict(boxstyle="square,pad=0.18", fc="#2a78d6", ec="none"),
+                zorder=4)
+        if not last:
+            ax.add_patch(FancyArrowPatch(
+                (i + 0.47, 0.0), (i + 0.53, 0.0),
+                arrowstyle="-|>", mutation_scale=11,
+                color=MUTED, lw=1.2, zorder=2))
+    for x, txt in notes:
+        ax.text(x, -0.55, txt, ha="center", va="center",
+                fontsize=5.8, color=MUTED, style="italic", linespacing=1.3)
+    save(fig, "fig_pipeline")
+
+
 # ---------------------------------------------------------------- geometry
 def fig_geometry():
     """Ministral end-of-reasoning states projected on the FROZEN tau=0 arrow
@@ -302,6 +352,7 @@ def fig_axes_cos():
 
 
 if __name__ == "__main__":
+    fig_pipeline()
     fig_geometry()
     fig_positional()
     fig_tempshift()
