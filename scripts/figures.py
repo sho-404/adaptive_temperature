@@ -560,11 +560,11 @@ def fig_flowmap():
     # ---- tier 3: analyses, fed from the tensors via a horizontal bus
     Ys = 0.25
     analyses = [
-        (0.15, "analyze.py", "arrow + probe AUCs,\npositional curve,\n3$\\times$3 temp transfer,\nlayers, baselines", "Tab. II, Figs. 3--5, 10"),
-        (2.15, "geometry & CIs", "band-arrow cosines,\npre vs. end axis,\nbootstrap CIs", "Figs. 6--7"),
-        (4.15, "within_prompt.py", "same-question\ncorrect-vs-incorrect\npairs", "Fig. 9"),
-        (6.15, "verifier.py", "best-of-5 voting,\nrisk--coverage", "Tab. III, Fig. 11"),
-        (8.15, "legacy pair data", "frozen readouts under\ndistribution shift", "Fig. 8"),
+        (0.15, "analyze.py", "arrow + probe AUCs,\npositional curve,\n3$\\times$3 temp transfer,\nlayers, baselines", "Tab. II, Figs. 3--5, 9"),
+        (2.15, "geometry & CIs", "band-arrow cosines,\npre vs. end axis,\nbootstrap CIs", "Fig. 6"),
+        (4.15, "within_prompt.py", "same-question\ncorrect-vs-incorrect\npairs", "Fig. 8"),
+        (6.15, "verifier.py", "best-of-5 voting,\nrisk--coverage", "Tab. III, Fig. 10"),
+        (8.15, "legacy pair data", "frozen readouts under\ndistribution shift", "Fig. 7"),
     ]
     bus_y = 2.25
     ax.plot([8.2, 8.2], [2.55, bus_y], color=MUTED, lw=1.0, zorder=1)
