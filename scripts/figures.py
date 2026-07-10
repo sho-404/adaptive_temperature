@@ -576,3 +576,128 @@ def fig_flowmap():
                 fontsize=5.6, color="#104281", fontweight="bold")
         arrow(ax, (x + 0.9, bus_y), (x + 0.9, Ys + 1.95))
     save(fig, "fig_flowmap")
+
+
+def fig_cascade():
+    """The projection cascade: the same clouds seen in 3-D, 2-D, and finally
+    as the 1-D score that decides. Columns = temperature bands; the x-axis
+    (projection on the frozen tau=0 arrow) is shared by every panel."""
+    tr = torch.load(ROOT / "data/gsm8k_en_clean.ministral.train.pt",
+                    map_location="cpu", weights_only=False)
+    te = torch.load(ROOT / "data/gsm8k_en_clean.ministral.test.pt",
+                    map_location="cpu", weights_only=False)
+
+    def end_h(d):
+        return d["hidden_frac"][:, -1, :].float().numpy()
+
+    Xtr, ytr = end_h(tr), tr["was_correct"].numpy()
+    ttr, mtr = tr["temperature"].numpy(), (~tr["truncated"]).numpy()
+    sel = mtr & (ttr == 0.0)
+    w = Xtr[sel & ytr].mean(0) - Xtr[sel & ~ytr].mean(0)
+    w /= np.linalg.norm(w)
+    R = Xtr[sel] - Xtr[sel].mean(0)
+    R = R - np.outer(R @ w, w)
+    _, _, Vt = np.linalg.svd(R[:4000], full_matrices=False)
+    p1, p2 = Vt[0], Vt[1]
+
+    Xte, yte = end_h(te), te["was_correct"].numpy()
+    tte, mte = te["temperature"].numpy(), (~te["truncated"]).numpy()
+    mu = Xtr[mtr].mean(0)
+    PX = (Xte[mte] - mu) @ w
+    XL = (np.percentile(PX, 0.3) - 8, np.percentile(PX, 99.9) + 8)
+
+    rng = np.random.default_rng(0)
+    fig = plt.figure(figsize=(PAGE_W, 5.6))
+    gs = fig.add_gridspec(3, 3, height_ratios=[1.05, 1.0, 0.40],
+                          hspace=0.24, wspace=0.16)
+
+    for k, b in enumerate(BANDS):
+        m = mte & np.isclose(tte, float(b))
+        X, y = Xte[m] - mu, yte[m]
+        px, py, pz = X @ w, X @ p1, X @ p2
+        auc = roc_auc_score(y, px)
+        mg = np.array([px[y].mean(), py[y].mean(), pz[y].mean()])
+        mr = np.array([px[~y].mean(), py[~y].mean(), pz[~y].mean()])
+        thr = 0.5 * (mg[0] + mr[0])
+        keep = rng.permutation(len(y))[:900]
+
+        # ---- row 1: 3-D, flattened into a wide slab sharing the x range
+        ax = fig.add_subplot(gs[0, k], projection="3d")
+        for cls, col, mk, al, z in [(True, GOOD, "o", 0.25, 2),
+                                    (False, CRIT, "x", 0.7, 3)]:
+            i = keep[y[keep] == cls]
+            ax.scatter(px[i], py[i], pz[i], s=4 if cls else 8, marker=mk,
+                       c=col, alpha=al, linewidths=0.6, zorder=z)
+        ax.quiver(*mr, *(mg - mr), color=INK, lw=2.0,
+                  arrow_length_ratio=0.12, zorder=6)
+        ax.scatter(*mr, color=CRIT, s=45, edgecolors="white", lw=1.0, zorder=7)
+        ax.scatter(*mg, color=GOOD, s=45, edgecolors="white", lw=1.0, zorder=7)
+        ax.set_proj_type("ortho")
+        ax.view_init(elev=14, azim=-80)
+        ax.set_xlim(*XL)
+        ax.set_ylim(np.percentile(py, 0.3), np.percentile(py, 99.9))
+        ax.set_zlim(np.percentile(pz, 0.3), np.percentile(pz, 99.9))
+        ax.set_box_aspect((2.5, 1.0, 0.85))
+        ax.set_title(f"$\\tau={b}$    AUC {auc:.2f}", fontsize=8.5, pad=0)
+        for pane in (ax.xaxis, ax.yaxis, ax.zaxis):
+            pane.set_ticklabels([])
+            pane.pane.set_alpha(0.04)
+            pane.line.set_color(BASE)
+        ax.grid(False)
+        if k == 0:
+            ax.text2D(-0.08, 0.5, "3-D view\n(two nuisance axes)",
+                      transform=ax.transAxes, rotation=90, va="center",
+                      ha="center", fontsize=7.5, color=INK)
+
+        # ---- row 2: 2-D
+        ax = fig.add_subplot(gs[1, k])
+        for cls, col, mk, al, z in [(True, GOOD, "o", 0.3, 2),
+                                    (False, CRIT, "x", 0.75, 3)]:
+            i = keep[y[keep] == cls]
+            ax.scatter(px[i], py[i], s=5 if cls else 9, marker=mk, c=col,
+                       alpha=al, linewidths=0.7, zorder=z)
+        ax.annotate("", xy=(mg[0], mg[1]), xytext=(mr[0], mr[1]),
+                    arrowprops=dict(arrowstyle="-|>", lw=1.8, color=INK),
+                    zorder=6)
+        ax.scatter([mr[0], mg[0]], [mr[1], mg[1]], c=[CRIT, GOOD], s=40,
+                   edgecolors="white", lw=1.0, zorder=7)
+        ax.axvline(thr, color=INK, lw=0.8, ls="--")
+        ax.set_xlim(*XL)
+        ax.set_xticklabels([])
+        despine(ax)
+        if k == 0:
+            ax.set_ylabel("2-D view\n(one nuisance axis)", fontsize=7.5)
+        else:
+            ax.set_yticklabels([])
+
+        # ---- row 3: 1-D (the score itself)
+        ax = fig.add_subplot(gs[2, k])
+        jit = rng.normal(0, 0.16, len(px))
+        for cls, col, mk, al, z in [(True, GOOD, "o", 0.25, 2),
+                                    (False, CRIT, "x", 0.7, 3)]:
+            i = keep[y[keep] == cls]
+            ax.scatter(px[i], jit[i], s=4 if cls else 8, marker=mk, c=col,
+                       alpha=al, linewidths=0.6, zorder=z)
+        ax.annotate("", xy=(mg[0], 0.78), xytext=(mr[0], 0.78),
+                    arrowprops=dict(arrowstyle="-|>", lw=1.6, color=INK),
+                    zorder=6)
+        ax.scatter([mr[0], mg[0]], [0.78, 0.78], c=[CRIT, GOOD], s=32,
+                   edgecolors="white", lw=0.9, zorder=7)
+        ax.axvline(thr, color=INK, lw=0.9, ls="--")
+        ax.text(thr - 4, 1.02, "midpoint", ha="right", fontsize=6.2, color=INK)
+        ax.set_xlim(*XL)
+        ax.set_ylim(-1.15, 1.45)
+        ax.set_yticks([])
+        despine(ax)
+        ax.spines["left"].set_visible(False)
+        ax.set_xlabel("projection on frozen $\\tau{=}0$ arrow", fontsize=7.5)
+        if k == 0:
+            ax.set_ylabel("1-D:\nthe score", fontsize=7.5)
+
+    handles = [plt.Line2D([], [], marker="o", ls="", color=GOOD, label="correct"),
+               plt.Line2D([], [], marker="x", ls="", color=CRIT, label="incorrect"),
+               plt.Line2D([], [], marker=r"$\rightarrow$", ls="", color=INK,
+                          markersize=12, label="arrow (red mean $\\to$ green mean)")]
+    fig.legend(handles=handles, loc="lower center", ncol=3, frameon=False,
+               fontsize=7.5, bbox_to_anchor=(0.5, -0.015))
+    save(fig, "fig_cascade")
