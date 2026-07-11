@@ -820,7 +820,9 @@ def fig_cascade():
         ax.scatter([mr[0], mg[0]], [0.78, 0.78], c=[CRIT, GOOD], s=32,
                    edgecolors="white", lw=0.9, zorder=7)
         ax.axvline(thr, color=INK, lw=0.9, ls="--")
-        ax.text(thr, 1.26, "midpoint", ha="center", fontsize=6.2, color=INK)
+        ax.text(thr, 1.26, "midpoint", ha="center", va="center",
+                fontsize=6.2, color=INK, zorder=8,
+                bbox=dict(boxstyle="round,pad=0.18", fc="white", ec="none"))
         ax.set_xlim(*XL)
         ax.set_ylim(-1.15, 1.45)
         ax.set_yticks([])
