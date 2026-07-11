@@ -545,7 +545,7 @@ def fig_flowmap():
 
     # -- GSM8K: a problem card, drawn
     panel(ax, 0.12, T1Y, 1.78, T1H, "GSM8K")
-    cx, cy, cw, ch = 0.42, 5.16, 1.05, 0.76
+    cx, cy, cw, ch = 0.42, 5.26, 1.05, 0.74
     ax.add_patch(FancyBboxPatch((cx + 0.09, cy + 0.09), cw, ch,
                  boxstyle="round,pad=0.008,rounding_size=0.02",
                  fc="white", ec=BASE, lw=0.7, zorder=3))
@@ -568,7 +568,7 @@ def fig_flowmap():
              ("Qwen2.5-3B", "#6f5bd6"),
              ("Llama-3.2-3B", "#0872e4")]
     for i, (name, c) in enumerate(chips):
-        yc = 5.7 - 0.36 * i
+        yc = 5.76 - 0.34 * i
         ax.add_patch(FancyBboxPatch((2.46, yc), 1.44, 0.29,
                      boxstyle="round,pad=0.008,rounding_size=0.05",
                      fc="white", ec=c, lw=1.0, zorder=4))
@@ -582,14 +582,14 @@ def fig_flowmap():
              ("1.0", 0.021, "$\\tau{=}1.0$", TEMP_C["1.0"]),
              ("1.0", 0.028, None, None)]
     for i, (band, amp, lab, lc) in enumerate(squig):
-        yc = 5.8 - 0.2 * i
+        yc = 5.86 - 0.19 * i
         ax.plot(4.08 + xs * 0.74,
                 yc + amp * np.sin(xs * (14 + 3 * i) + i),
                 color=TEMP_C[band], lw=1.3, solid_capstyle="round", zorder=4)
         if lab:
             ax.text(4.93, yc, lab, fontsize=5.0, va="center",
                     color=lc, fontweight="bold", zorder=4)
-    ax.text(3.88, T1Y + 0.08, "5 chains per problem  ·  "
+    ax.text(3.88, T1Y + 0.06, "5 chains per problem  ·  "
             "$\\approx$44k chains per model", ha="center", va="bottom",
             fontsize=5.2, color=INK, zorder=4)
 
@@ -670,7 +670,7 @@ def fig_flowmap():
     # -- feature tensors (data artifact) with matrix glyph
     panel(ax, 6.52, T2Y, 3.36, T2H, "feature tensors  (.pt)", ec=NAVY,
           fc="white")
-    gx, gy, cw2, ch2 = 6.78, 2.9, 0.155, 0.115
+    gx, gy, cw2, ch2 = 6.72, 2.9, 0.15, 0.115
     hi_row = 2
     for r in range(5):
         for c in range(7):
@@ -682,8 +682,8 @@ def fig_flowmap():
                          fc=fc2, ec=ec2, lw=0.5, zorder=4))
     ax.text(gx + 3.5 * cw2, gy - 0.09, "one row per graded chain",
             fontsize=4.9, ha="center", va="top", color=NAVY, zorder=4)
-    ax.text(8.15, 3.1, "hidden state at every tap\nlabel · temperature "
-            "· length\nlog-prob summaries", fontsize=5.3, va="center",
+    ax.text(8.02, 3.1, "hidden state at every tap\nlabel · temperature "
+            "· length\nlog-prob summaries", fontsize=5.0, va="center",
             ha="left", color=INK, linespacing=1.5, zorder=4)
 
     arrow(ax, (3.88, T1Y), (3.5, T2Y + T2H))
