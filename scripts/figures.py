@@ -515,72 +515,202 @@ def fig_arrow_concept():
 
 
 def fig_flowmap():
-    """Whole-study map: data -> generation -> grading -> extraction ->
-    tensors -> every analysis, each pointing to its figure/table."""
-    from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
+    """Whole-study map, drawn pictorially: dataset card -> three model chips
+    generating temperature-coded chains -> grading -> labels; replay with
+    the actual tap positions on a token strip + layer stack -> tensor glyph;
+    then the analysis fan-out, each card pointing to its figure/table."""
+    from matplotlib.patches import (FancyBboxPatch, FancyArrowPatch,
+                                    Rectangle)
 
-    def box(ax, x, y, w, h, title, body, ec="#2a78d6", fc="#eaf2fc",
-            tfs=6.8, bfs=5.4):
+    NAVY = "#104281"
+    PROC_FC, PROC_EC = "#f3f8fe", "#2a78d6"
+
+    def panel(ax, x, y, w, h, title, ec=PROC_EC, fc=PROC_FC, tfs=7.0):
         ax.add_patch(FancyBboxPatch((x, y), w, h,
-                     boxstyle="round,pad=0.012,rounding_size=0.025",
+                     boxstyle="round,pad=0.012,rounding_size=0.03",
                      fc=fc, ec=ec, lw=1.1, zorder=2))
-        ax.text(x + w / 2, y + h - 0.058, title, ha="center", va="top",
-                fontsize=tfs, fontweight="bold", color=INK, zorder=3)
-        if body:
-            ax.text(x + w / 2, y + 0.022, body, ha="center", va="bottom",
-                    fontsize=bfs, color=INK, zorder=3, linespacing=1.35)
+        ax.text(x + w / 2, y + h - 0.06, title, ha="center", va="top",
+                fontsize=tfs, fontweight="bold", color=INK, zorder=4)
 
-    def arrow(ax, p, q, rad=0.0):
+    def arrow(ax, p, q, rad=0.0, lw=1.1):
         ax.add_patch(FancyArrowPatch(p, q, arrowstyle="-|>", mutation_scale=9,
-                     color=MUTED, lw=1.0, zorder=1,
+                     color=MUTED, lw=lw, zorder=1,
                      connectionstyle=f"arc3,rad={rad}"))
 
-    fig, ax = plt.subplots(figsize=(PAGE_W, 4.3))
-    ax.set_xlim(0, 10); ax.set_ylim(0, 6); ax.axis("off"); ax.grid(False)
+    fig, ax = plt.subplots(figsize=(PAGE_W, 4.85))
+    ax.set_xlim(0, 10); ax.set_ylim(0, 6.65); ax.axis("off"); ax.grid(False)
 
-    # ---- tier 1: data & generation
-    box(ax, 0.15, 4.55, 1.7, 1.15, "GSM8K",
-        "7,473 train problems\n1,319 test problems")
-    box(ax, 2.45, 4.55, 2.6, 1.15, "1. Generate  (vLLM)",
-        "3 models $\\times$ 5 chains/problem\n(1 greedy, 2@$\\tau$0.6, 2@$\\tau$1.0)\n$\\approx$44k chains per model\ncollect.py --stage generate")
-    box(ax, 5.65, 4.55, 1.95, 1.15, "2. Grade",
-        "last '####' answer,\nexact match; drop\ntruncated chains")
-    box(ax, 8.2, 4.55, 1.65, 1.15, "labels",
-        "correct /\nincorrect", ec="#104281", fc="white")
-    arrow(ax, (1.85, 5.12), (2.45, 5.12))
-    arrow(ax, (5.05, 5.12), (5.65, 5.12))
-    arrow(ax, (7.6, 5.12), (8.2, 5.12))
+    # ================= tier 1: data -> generate -> grade -> labels
+    T1Y, T1H = 4.72, 1.72
 
-    # ---- tier 2: feature extraction
-    box(ax, 1.3, 2.55, 4.4, 1.3, "3. Teacher-force & tap",
-        "collect.py --stage extract:\n"
-        "replay each chain through its own model, record residual stream at\n"
-        "25 / 50 / 75 / 90 / 95 / 100% of the reasoning + pre-answer token\n"
-        "+ 8 layers + per-token log-probs")
-    box(ax, 6.55, 2.55, 3.3, 1.3, "feature tensors  (.pt)",
-        "one row per graded chain:\nhidden states at every tap,\nlabel, temperature, length,\nlog-prob summaries", ec="#104281", fc="white")
-    arrow(ax, (3.6, 4.55), (3.55, 3.85))
-    arrow(ax, (8.95, 4.55), (8.6, 3.85))
-    arrow(ax, (5.7, 3.2), (6.55, 3.2))
+    # -- GSM8K: a problem card, drawn
+    panel(ax, 0.12, T1Y, 1.78, T1H, "GSM8K")
+    cx, cy, cw, ch = 0.42, 5.16, 1.05, 0.76
+    ax.add_patch(FancyBboxPatch((cx + 0.09, cy + 0.09), cw, ch,
+                 boxstyle="round,pad=0.008,rounding_size=0.02",
+                 fc="white", ec=BASE, lw=0.7, zorder=3))
+    ax.add_patch(FancyBboxPatch((cx, cy), cw, ch,
+                 boxstyle="round,pad=0.008,rounding_size=0.02",
+                 fc="white", ec=MUTED, lw=0.8, zorder=4))
+    for i, wfrac in enumerate([0.86, 0.78, 0.62]):
+        ax.plot([cx + 0.1, cx + 0.1 + wfrac * (cw - 0.2)],
+                [cy + ch - 0.17 - 0.14 * i] * 2, color=BASE, lw=1.6,
+                solid_capstyle="round", zorder=5)
+    ax.text(cx + 0.1, cy + 0.12, "#### 18", fontsize=5.6, family="monospace",
+            color=NAVY, fontweight="bold", zorder=5)
+    ax.text(1.01, T1Y + 0.09, "7,473 train problems\n1,319 test problems",
+            ha="center", va="bottom", fontsize=5.4, color=INK,
+            linespacing=1.4, zorder=4)
 
-    # ---- tier 3: analyses, fed from the tensors via a horizontal bus
-    Ys = 0.25
+    # -- Generate: model chips + temperature-coded chains
+    panel(ax, 2.3, T1Y, 3.16, T1H, "1 · Generate  (vLLM)")
+    chips = [("Ministral-3-3B", "#f2620f"),
+             ("Qwen2.5-3B", "#6f5bd6"),
+             ("Llama-3.2-3B", "#0872e4")]
+    for i, (name, c) in enumerate(chips):
+        yc = 5.7 - 0.36 * i
+        ax.add_patch(FancyBboxPatch((2.46, yc), 1.44, 0.29,
+                     boxstyle="round,pad=0.008,rounding_size=0.05",
+                     fc="white", ec=c, lw=1.0, zorder=4))
+        ax.scatter([2.61], [yc + 0.145], s=12, color=c, zorder=5)
+        ax.text(2.73, yc + 0.15, name, fontsize=5.2, va="center",
+                color=INK, fontweight="bold", zorder=5)
+    xs = np.linspace(0, 1, 60)
+    squig = [("0.0", 0.0, "greedy", MUTED),
+             ("0.6", 0.009, "$\\tau{=}0.6$", TEMP_C["0.6"]),
+             ("0.6", 0.013, None, None),
+             ("1.0", 0.021, "$\\tau{=}1.0$", TEMP_C["1.0"]),
+             ("1.0", 0.028, None, None)]
+    for i, (band, amp, lab, lc) in enumerate(squig):
+        yc = 5.8 - 0.2 * i
+        ax.plot(4.08 + xs * 0.74,
+                yc + amp * np.sin(xs * (14 + 3 * i) + i),
+                color=TEMP_C[band], lw=1.3, solid_capstyle="round", zorder=4)
+        if lab:
+            ax.text(4.93, yc, lab, fontsize=5.0, va="center",
+                    color=lc, fontweight="bold", zorder=4)
+    ax.text(3.88, T1Y + 0.08, "5 chains per problem  ·  "
+            "$\\approx$44k chains per model", ha="center", va="bottom",
+            fontsize=5.2, color=INK, zorder=4)
+
+    # -- Grade
+    panel(ax, 5.86, T1Y, 1.98, T1H, "2 · Grade")
+    for i, (ans, mark, c) in enumerate([("#### 18", "✓", GOOD),
+                                        ("####  7", "✗", CRIT)]):
+        yc = 5.78 - 0.32 * i
+        ax.text(6.38, yc, ans, fontsize=5.8, family="monospace", color=INK,
+                va="center", zorder=4)
+        ax.text(7.3, yc, mark, fontsize=8, color=c, va="center",
+                fontweight="bold", zorder=4)
+    ax.text(6.85, T1Y + 0.09, "exact match on the last\n'####' line; truncated\nchains dropped",
+            ha="center", va="bottom", fontsize=5.0, color=INK,
+            linespacing=1.35, zorder=4)
+
+    # -- labels (data artifact)
+    panel(ax, 8.24, T1Y, 1.64, T1H, "labels", ec=NAVY, fc="white")
+    for i, (mark, c, lab) in enumerate([("✓", GOOD, "correct"),
+                                        ("✗", CRIT, "incorrect")]):
+        yc = 5.52 - 0.4 * i
+        ax.text(8.72, yc, mark, fontsize=9, color=c, va="center",
+                fontweight="bold", zorder=4)
+        ax.text(8.95, yc, lab, fontsize=5.6, va="center", color=INK, zorder=4)
+    ax.text(9.06, T1Y + 0.11, "one per chain", ha="center", va="bottom",
+            fontsize=5.0, color=MUTED, zorder=4)
+
+    arrow(ax, (1.9, 5.58), (2.3, 5.58))
+    arrow(ax, (5.46, 5.58), (5.86, 5.58))
+    arrow(ax, (7.84, 5.58), (8.24, 5.58))
+
+    # ================= tier 2: replay & tap -> tensors
+    T2Y, T2H = 2.5, 1.72
+    panel(ax, 0.12, T2Y, 6.0, T2H,
+          "3 · Teacher-force & tap:  replay each chain through its own model",
+          tfs=6.2)
+
+    # token strip: reasoning tokens then answer tokens
+    n_tok, n_ans = 40, 6
+    tx0, tw, tg, ty, th = 0.55, 0.086, 0.021, 3.22, 0.15
+    step = tw + tg
+    for i in range(n_tok):
+        c = "#9ec5f4" if i < n_tok - n_ans else "#f5c869"
+        ax.add_patch(Rectangle((tx0 + i * step, ty), tw, th, fc=c, ec="none",
+                     zorder=4))
+    reas_end = n_tok - n_ans - 1
+    ax.text(tx0, ty - 0.11, "reasoning chain", fontsize=4.9,
+            color=MUTED, va="center", ha="left", zorder=4)
+    ax.text(tx0 + (n_tok - 1) * step + tw, ty + th + 0.14, "answer",
+            fontsize=4.9, color="#b97b00", va="bottom", ha="right", zorder=4)
+    for k, f in enumerate([0.25, 0.50, 0.75, 0.90, 0.95, 1.00]):
+        xt = tx0 + round(f * reas_end) * step + tw / 2
+        col = {0.50: CAT[0], 1.00: "#b97b00"}.get(f, MUTED)
+        ax.plot([xt, xt], [ty + th, ty + th + 0.09], color=col, lw=1.1,
+                zorder=5)
+        ax.text(xt, ty + th + 0.13 + (0.12 if k % 2 else 0.0),
+                f"{int(f * 100)}%", fontsize=4.8, ha="center", color=col,
+                zorder=5)
+    xpre = tx0 + (reas_end + 1) * step
+    ax.scatter([xpre], [ty - 0.11], marker="D", s=11, color=CAT[1],
+               zorder=5)
+    ax.plot([xpre, xpre], [ty - 0.05, ty], color=CAT[1], lw=0.8, zorder=5)
+    ax.text(xpre + 0.08, ty - 0.11, "pre-answer tap", fontsize=4.9,
+            color=CAT[1], va="center", ha="left", zorder=5)
+
+    # layer stack: each tap is read at 8 depths
+    for i in range(8):
+        yb = 2.62 + 0.048 * i
+        ax.add_patch(Rectangle((0.55, yb), 0.52, 0.032,
+                     fc=SEQ(0.25 + 0.09 * i), ec="none", zorder=4))
+    ax.text(1.17, 2.83, "$\\times$ 8 depths\nper tap", fontsize=5.2,
+            color=INK, va="center", zorder=4, linespacing=1.3)
+    ax.text(3.75, 2.76, "residual stream recorded at every marked tap;\n"
+            "per-token log-probs kept for the output-only baselines\n"
+            "collect.py --stage extract", ha="center", va="center",
+            fontsize=5.3, color=INK, linespacing=1.45, zorder=4)
+
+    # -- feature tensors (data artifact) with matrix glyph
+    panel(ax, 6.52, T2Y, 3.36, T2H, "feature tensors  (.pt)", ec=NAVY,
+          fc="white")
+    gx, gy, cw2, ch2 = 6.78, 2.9, 0.155, 0.115
+    hi_row = 2
+    for r in range(5):
+        for c in range(7):
+            if r == hi_row:
+                fc2, ec2 = "#cde2fb", NAVY
+            else:
+                fc2, ec2 = "#f0efe9", "white"
+            ax.add_patch(Rectangle((gx + c * cw2, gy + r * ch2), cw2, ch2,
+                         fc=fc2, ec=ec2, lw=0.5, zorder=4))
+    ax.text(gx + 3.5 * cw2, gy - 0.09, "one row per graded chain",
+            fontsize=4.9, ha="center", va="top", color=NAVY, zorder=4)
+    ax.text(8.15, 3.1, "hidden state at every tap\nlabel · temperature "
+            "· length\nlog-prob summaries", fontsize=5.3, va="center",
+            ha="left", color=INK, linespacing=1.5, zorder=4)
+
+    arrow(ax, (3.88, T1Y), (3.5, T2Y + T2H))
+    arrow(ax, (9.06, T1Y), (8.6, T2Y + T2H))
+    arrow(ax, (6.12, 3.36), (6.52, 3.36))
+
+    # ================= tier 3: the analysis fan-out
     analyses = [
-        (0.15, "analyze.py", "arrow + probe AUCs,\npositional curve,\n3$\\times$3 temp transfer,\nlayers, baselines", "Tab. II, Figs. 3--5, 9"),
-        (2.15, "geometry & CIs", "band-arrow cosines,\npre vs. end axis,\nbootstrap CIs", "Fig. 6"),
-        (4.15, "within_prompt.py", "same-question\ncorrect-vs-incorrect\npairs", "Fig. 8"),
-        (6.15, "verifier.py", "best-of-5 voting,\nrisk--coverage", "Tab. III, Fig. 10"),
-        (8.15, "legacy pair data", "frozen readouts under\ndistribution shift", "Fig. 7"),
+        ("analyze.py", "arrow + probe AUCs,\npositional curve,\n3$\\times$3 temp transfer,\nlayers, baselines", "Tab. II · Figs. 3–5, 9"),
+        ("geometry & CIs", "band-arrow cosines,\npre vs. end axis,\nbootstrap CIs", "Fig. 6"),
+        ("within_prompt.py", "same-question\ncorrect-vs-incorrect\npairs", "Fig. 8"),
+        ("verifier.py", "best-of-5 voting,\nrisk–coverage", "Tab. III · Fig. 10"),
+        ("legacy pair data", "frozen readouts under\ndistribution shift", "Fig. 7"),
     ]
-    bus_y = 2.25
-    ax.plot([8.2, 8.2], [2.55, bus_y], color=MUTED, lw=1.0, zorder=1)
-    ax.plot([0.15 + 0.9, 8.15 + 0.9], [bus_y, bus_y], color=MUTED, lw=1.0,
-            zorder=1)
-    for x, title, body, out in analyses:
-        box(ax, x, Ys + 0.55, 1.8, 1.35, title, body, tfs=6.2, bfs=5.2)
-        ax.text(x + 0.9, Ys + 0.28, "$\\rightarrow$ " + out, ha="center",
-                fontsize=5.6, color="#104281", fontweight="bold")
-        arrow(ax, (x + 0.9, bus_y), (x + 0.9, Ys + 1.95))
+    bus_y, cy0, chh = 2.16, 0.52, 1.38
+    ax.plot([8.2, 8.2], [T2Y, bus_y], color=MUTED, lw=1.1, zorder=1)
+    ax.plot([1.01, 9.01], [bus_y, bus_y], color=MUTED, lw=1.1, zorder=1)
+    for i, (title, body, out) in enumerate(analyses):
+        x = 0.12 + 2.0 * i
+        panel(ax, x, cy0, 1.78, chh, title, tfs=6.2)
+        ax.text(x + 0.89, cy0 + 0.53, body, ha="center", va="center",
+                fontsize=5.2, color=INK, linespacing=1.4, zorder=4)
+        ax.text(x + 0.89, 0.24, out, ha="center", va="center", fontsize=5.4,
+                color=NAVY, fontweight="bold", zorder=4,
+                bbox=dict(boxstyle="round,pad=0.28", fc="#eaf2fc",
+                          ec="none"))
+        arrow(ax, (x + 0.89, bus_y), (x + 0.89, cy0 + chh))
     save(fig, "fig_flowmap")
 
 
